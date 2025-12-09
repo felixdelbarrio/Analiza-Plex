@@ -7,6 +7,11 @@ omdb_cache.json
 # Ignorar entorno virtual
 venv/
 
+# Ignorar caches
+omdb_cache.json
+__pycache__/
+*.pyc
+
 #Ignorar los reportes 
 report_*.csv
 report_*.html
