@@ -1,0 +1,12 @@
+# Ignorar variables de entorno
+.env
+
+# Ignorar archivo de cache OMDb
+omdb_cache.json
+
+# Ignorar entorno virtual
+venv/
+
+#Ignorar los reportes 
+report_*.csv
+report_*.html
