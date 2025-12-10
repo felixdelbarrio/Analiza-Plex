@@ -990,6 +990,64 @@ def analyze_single_library(section, suggestions: List[Dict[str, Any]], logs: Lis
 
         print(f"   -> RESULT file_path={file_path}, file_size={file_size}")
 
+        # ---------------------------------------------------
+        #  🔍 DETERMINAR EL "MEJOR" PAYLOAD DE OMDb PARA GUARDAR
+        # ---------------------------------------------------
+        best_omdb_payload: Optional[Dict[str, Any]] = None
+
+        if omdb_data:
+            best_omdb_payload = omdb_data
+        elif fallback_suggested and fallback_suggested.get("raw_detail"):
+            best_omdb_payload = fallback_suggested["raw_detail"]
+
+        # Campos "bonitos" de OMDb para usar en el dashboard (solo en detalle)
+        rated = released = runtime = genre = None
+        director = writer = actors = language = country = awards = plot = None
+
+        if best_omdb_payload:
+            rated = best_omdb_payload.get("Rated")
+            released = best_omdb_payload.get("Released")
+            runtime = best_omdb_payload.get("Runtime")
+            genre = best_omdb_payload.get("Genre")
+            director = best_omdb_payload.get("Director")
+            writer = best_omdb_payload.get("Writer")
+            actors = best_omdb_payload.get("Actors")
+            language = best_omdb_payload.get("Language")
+            country = best_omdb_payload.get("Country")
+            awards = best_omdb_payload.get("Awards")
+            plot = best_omdb_payload.get("Plot")
+
+            # Si aún no teníamos poster_url, intentamos cogerlo del payload
+            if not poster_url:
+                poster_raw = best_omdb_payload.get("Poster")
+                if poster_raw and poster_raw != "N/A":
+                    poster_url = poster_raw
+
+        # JSON completo de OMDb como cadena
+        if best_omdb_payload:
+            try:
+                omdb_json_str = json.dumps(best_omdb_payload, ensure_ascii=False)
+            except Exception:
+                omdb_json_str = str(best_omdb_payload)
+        else:
+            omdb_json_str = None
+
+        # Prefijo omdb_ para TODAS las claves del payload
+        omdb_prefixed: Dict[str, Any] = {}
+        if best_omdb_payload:
+            for k, v in best_omdb_payload.items():
+                col_name = f"omdb_{k}"
+                # Convertimos dict/list a JSON string para que el CSV sea estable
+                if isinstance(v, (dict, list)):
+                    try:
+                        v_str = json.dumps(v, ensure_ascii=False)
+                    except Exception:
+                        v_str = str(v)
+                else:
+                    v_str = v
+                if col_name not in omdb_prefixed:
+                    omdb_prefixed[col_name] = v_str
+
         rows.append({
             "library": section.title,
             "title": movie.title,
@@ -1002,11 +1060,30 @@ def analyze_single_library(section, suggestions: List[Dict[str, Any]], logs: Lis
             "file": file_path,
             "file_size": file_size,            # bytes desde Plex (suma de todas las parts)
             "ratingKey": movie.ratingKey,
-            "thumb": movie.thumb,              # lo dejamos por compatibilidad, pero no es obligatorio
-            "poster_url": poster_url,          # URL del póster de OMDb (por ID o por fallback)
+            "thumb": movie.thumb,              # lo dejamos por compatibilidad
+            "poster_url": poster_url,          # URL del póster de OMDb
+
+            # 🔹 Campos OMDb “bonitos” (solo para detalle en el dashboard)
+            "Rated": rated,
+            "Released": released,
+            "Runtime": runtime,
+            "Genre": genre,
+            "Director": director,
+            "Writer": writer,
+            "Actors": actors,
+            "Language": language,
+            "Country": country,
+            "Awards": awards,
+            "Plot": plot,
+
+            # 🔹 JSON completo de OMDb
+            "omdb_json": omdb_json_str,
+
             "decision": decision,
             "reason": reason,
             "misidentified_hint": misid_flag,
+            # Los omdb_* se añaden justo debajo
+            **omdb_prefixed,
         })
 
         # ------ Parte de corrección de metadata ------
