@@ -465,67 +465,16 @@ def render_detail_card(row: dict, show_modal_button=True):
 
 def render_modal():
     """
-    Ventana modal superpuesta — usa sesión como estado.
-    Ocultamos también el header / barra superior de Streamlit.
+    Vista de detalle ampliado (sin wrapper modal-box).
     """
     if not st.session_state["modal_open"]:
         return
-
-    # --- Ocultar header / toolbar de Streamlit mientras la modal está activa ---
-    st.markdown(
-        """
-        <style>
-        header[data-testid="stHeader"] {
-            display: none !important;
-        }
-        div[data-testid="stToolbar"] {
-            display: none !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
 
     row = st.session_state["modal_row"]
     if row is None:
         return
 
-    st.markdown(
-        """
-        <style>
-        :root {
-            --main-bg: var(--background-color, #0e1117);
-            --sec-bg: var(--secondary-background-color, #262730);
-            --txt: var(--text-color, #fafafa);
-        }
-
-        .modal-box {
-            position: fixed;
-            top: 5%;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 80%;
-            max-height: 85%;
-            overflow-y: auto;
-            background: var(--sec-bg);
-            border-radius: 14px;
-            padding: 24px 28px;
-            z-index: 10001;
-            box-shadow: 0 24px 48px rgba(0,0,0,0.7);
-            border: 1px solid rgba(255,255,255,0.12);
-            color: var(--txt);
-        }
-
-        .modal-box * {
-            color: var(--txt) !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown('<div class="modal-box">', unsafe_allow_html=True)
-
+    # Cabecera de la vista de detalle
     c1, c2 = st.columns([10, 1])
     with c1:
         st.markdown("### 🔍 Detalle ampliado")
@@ -535,9 +484,8 @@ def render_modal():
             st.session_state["modal_row"] = None
             st.rerun()
 
+    # Contenido de detalle
     render_detail_card(row, show_modal_button=False)
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ----------------------------------------------------
@@ -545,17 +493,34 @@ def render_modal():
 # ----------------------------------------------------
 st.set_page_config(page_title="Plex Movies Cleaner", layout="wide")
 
+# Ocultamos header / toolbar / command bar de Streamlit
+st.markdown(
+    """
+    <style>
+    header[data-testid="stHeader"],
+    .stAppHeader,
+    div[class*="stAppHeader"],
+    div[data-testid="stToolbar"],
+    div[data-testid="stCommandBar"] {
+        display: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # Título principal solo cuando NO hay modal abierto
 if not st.session_state.get("modal_open"):
     st.title("🎬 Plex Movies Cleaner — Dashboard")
 
-# Modal (si está activo)
+# Si hay "modal", mostramos solo la vista de detalle y paramos
 render_modal()
-
-# Si el modal está abierto, no renderizamos el resto del dashboard
 if st.session_state.get("modal_open"):
     st.stop()
 
+# ----------------------------------------------------
+# Carga de datos
+# ----------------------------------------------------
 if not os.path.exists(ALL_CSV):
     st.error("No se encuentra report_all.csv. Ejecuta analiza_plex.py primero.")
     st.stop()
@@ -568,7 +533,7 @@ for col in ["poster_url", "trailer_url", "omdb_json"]:
     if col in df_all.columns:
         df_all[col] = df_all[col].astype(str)
 
-# Columnas derivadas ligeras (no parseamos omdb_json aquí)
+# Columnas derivadas ligeras
 df_all = add_derived_columns(df_all)
 
 df_all = clean_base_dataframe(df_all)
@@ -970,7 +935,6 @@ with tab5:
 
     # 9) Ranking de directores
     elif view == "Ranking de directores":
-        # Director solo se obtiene del JSON; lo parseamos aquí
         if "omdb_json" not in df_all.columns:
             st.info("No existe información OMDb JSON (omdb_json).")
         else:
