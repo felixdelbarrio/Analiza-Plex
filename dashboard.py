@@ -22,10 +22,6 @@ FILTERED_CSV = f"{OUTPUT_PREFIX}_filtered.csv"
 METADATA_OUTPUT_PREFIX = os.getenv("METADATA_OUTPUT_PREFIX", "metadata_fix")
 METADATA_SUGG_CSV = f"{METADATA_OUTPUT_PREFIX}_suggestions.csv"
 
-# Datos de Plex para posters y enlaces
-PLEX_BASEURL = os.getenv("PLEX_BASEURL", "").rstrip("/")
-PLEX_TOKEN = os.getenv("PLEX_TOKEN", "")
-
 
 # ----------------------------------------------------
 # Función de borrado reutilizando la lógica del script
@@ -69,58 +65,6 @@ def delete_files_from_rows(rows):
 
 
 # ----------------------------------------------------
-# Helpers: posters y enlaces Plex
-# ----------------------------------------------------
-def build_poster_url(thumb: str | None) -> str | None:
-    if not thumb or not PLEX_BASEURL:
-        return None
-    # thumb viene tipo "/library/metadata/1234/thumb/..."
-    base = f"{PLEX_BASEURL}{thumb}"
-    if PLEX_TOKEN:
-        return f"{base}?X-Plex-Token={PLEX_TOKEN}"
-    return base
-
-
-def build_plex_item_url(rating_key) -> str | None:
-    if pd.isna(rating_key) or not PLEX_BASEURL:
-        return None
-    # Enlace genérico basado en ratingKey
-    # Plex web suele aceptar: /web/index.html#!/details?key=%2Flibrary%2Fmetadata%2F{ratingKey}
-    key = f"%2Flibrary%2Fmetadata%2F{int(rating_key)}"
-    return f"{PLEX_BASEURL}/web/index.html#!/details?key={key}"
-
-
-def render_poster_card(row) -> str:
-    poster_url = build_poster_url(row.get("thumb"))
-    plex_url = build_plex_item_url(row.get("ratingKey"))
-    title = row.get("title", "")
-    year = row.get("year", "")
-    decision = row.get("decision", "")
-    imdb = row.get("imdb_rating", "")
-    if not poster_url and not plex_url:
-        return ""
-    return f"""
-    <div style="width: 180px; margin: 8px; display: inline-block; vertical-align: top; font-size: 12px;">
-      <div style="border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.2); overflow: hidden; background: #fff;">
-        <a href="{plex_url or '#'}" target="_blank" style="text-decoration:none; color: inherit;">
-          {'<img src="'+poster_url+'" style="width: 100%; height: auto; display: block;" />' if poster_url else ''}
-          <div style="padding: 6px 8px;">
-            <div style="font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-              {title}
-            </div>
-            <div style="color: #666;">{year} · {decision}</div>
-            <div style="color: #999;">IMDb: {imdb}</div>
-            <div style="margin-top:4px; text-align:right;">
-              <span style="font-size:11px; color:#1976d2;">Abrir en Plex ↗</span>
-            </div>
-          </div>
-        </a>
-      </div>
-    </div>
-    """
-
-
-# ----------------------------------------------------
 # Configuración Streamlit
 # ----------------------------------------------------
 st.set_page_config(page_title="Plex Movies Cleaner", layout="wide")
@@ -134,15 +78,16 @@ df_all = pd.read_csv(ALL_CSV)
 df_filtered = pd.read_csv(FILTERED_CSV) if os.path.exists(FILTERED_CSV) else None
 
 # Aseguramos tipos numéricos donde aplica
-for col in ["imdb_rating", "rt_score", "imdb_votes", "year", "plex_rating", "file_size", "ratingKey"]:
+for col in ["imdb_rating", "rt_score", "imdb_votes", "year", "plex_rating"]:
     if col in df_all.columns:
         df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
 
-# Derivamos tamaño en GB
+# 🔹 NUEVO: aseguramos que file_size es numérico, si existe
 if "file_size" in df_all.columns:
-    df_all["file_size_gb"] = df_all["file_size"].fillna(0) / (1024 ** 3)
-else:
-    df_all["file_size_gb"] = 0.0
+    df_all["file_size"] = pd.to_numeric(df_all["file_size"], errors="coerce")
+
+if df_filtered is not None and "file_size" in df_filtered.columns:
+    df_filtered["file_size"] = pd.to_numeric(df_filtered["file_size"], errors="coerce")
 
 # Cargamos sugerencias de metadata (si existen)
 if os.path.exists(METADATA_SUGG_CSV):
@@ -155,7 +100,7 @@ else:
     df_meta = None
 
 # ----------------------------------------------------
-# Resumen + gráficos rápidos + espacio
+# Resumen + gráficos rápidos
 # ----------------------------------------------------
 st.subheader("Resumen general")
 
@@ -170,28 +115,12 @@ with col4:
     if "imdb_rating" in df_all.columns:
         st.metric("IMDb medio", round(df_all["imdb_rating"].mean(skipna=True), 2))
 
-# Métricas de espacio
-if "file_size_gb" in df_all.columns:
-    total_space = df_all["file_size_gb"].sum()
-    if df_filtered is not None and "file_size" in df_filtered.columns:
-        df_filtered["file_size_gb"] = df_filtered["file_size"].fillna(0) / (1024 ** 3)
-        potential_delete_space = df_filtered[df_filtered["decision"] == "DELETE"]["file_size_gb"].sum()
-    else:
-        potential_delete_space = 0.0
-
-    st.markdown("### Espacio en disco")
-    col_es1, col_es2 = st.columns(2)
-    with col_es1:
-        st.metric("Espacio total estimado", f"{total_space:,.2f} GB")
-    with col_es2:
-        st.metric("Espacio potencial a liberar (DELETE)", f"{potential_delete_space:,.2f} GB")
-
 st.markdown("---")
 
 # Mini-gráficos en el resumen
 col_a, col_b = st.columns(2)
 with col_a:
-    st.caption("Distribución por decisión (nº de películas)")
+    st.caption("Distribución por decisión")
     if "decision" in df_all.columns:
         counts_dec = df_all["decision"].value_counts().reset_index()
         counts_dec.columns = ["decision", "count"]
@@ -278,19 +207,6 @@ with tab2:
 
         st.dataframe(df_view, use_container_width=True)
 
-        # Vista rápida con pósters (primeros N)
-        st.markdown("---")
-        st.subheader("Vista rápida con pósters (primeros 50 resultados filtrados)")
-
-        max_cards = st.slider("Número máximo de pósters a mostrar", 10, 100, 50, 5)
-        df_cards = df_view.head(max_cards)
-
-        if df_cards.empty:
-            st.info("No hay resultados para mostrar.")
-        else:
-            html_cards = "".join(render_poster_card(row) for _, row in df_cards.iterrows())
-            st.markdown(html_cards, unsafe_allow_html=True)
-
 
 # ----------------------------------------------------
 # Tab 3: Búsqueda avanzada
@@ -304,14 +220,48 @@ with tab3:
 
     df_view = df_all.copy()
 
+    # Filtro por título
     if title_query:
         df_view = df_view[df_view["title"].str.contains(title_query, case=False, na=False)]
 
+    # Filtro por IMDb
     if "imdb_rating" in df_view.columns:
         df_view = df_view[
             (df_view["imdb_rating"].fillna(0) >= min_imdb)
             & (df_view["imdb_rating"].fillna(10) <= max_imdb)
         ]
+
+    # 🔹 NUEVO: filtro por tamaño de fichero (file_size -> GB)
+    if "file_size" in df_view.columns:
+        # Crear columna auxiliar en GB solo para esta vista
+        df_view["file_size_gb"] = df_view["file_size"] / (1024**3)
+
+        valid_sizes = df_view["file_size_gb"].dropna()
+        valid_sizes = valid_sizes[valid_sizes > 0]
+
+        if not valid_sizes.empty:
+            min_size = float(valid_sizes.min())
+            max_size = float(valid_sizes.max())
+
+            st.markdown("#### Filtro por tamaño de archivo (GB)")
+            size_min, size_max = st.slider(
+                "Rango de tamaño (GB)",
+                min_value=0.0,
+                max_value=round(max_size + 0.1, 1),
+                value=(0.0, round(max_size + 0.1, 1)),
+                step=0.1,
+            )
+
+            df_view = df_view[
+                (df_view["file_size_gb"].fillna(0) >= size_min)
+                & (df_view["file_size_gb"].fillna(0) <= size_max)
+            ]
+
+            st.caption(
+                f"Tamaños reales en dataset: de ~{min_size:.2f} GB a ~{max_size:.2f} GB"
+            )
+        else:
+            st.info("No hay tamaños de fichero válidos (file_size) para aplicar filtro.")
 
     st.dataframe(df_view, use_container_width=True)
 
@@ -347,12 +297,8 @@ with tab4:
 
         st.write(f"Seleccionadas tras filtros: **{len(df_del)}**")
 
-        cols_show = ["library", "title", "year", "imdb_rating", "rt_score", "imdb_votes", "reason", "file"]
-        if "file_size_gb" in df_del.columns:
-            cols_show.append("file_size_gb")
-
         st.dataframe(
-            df_del[cols_show],
+            df_del[["library", "title", "year", "imdb_rating", "rt_score", "imdb_votes", "reason", "file"]],
             use_container_width=True,
         )
 
@@ -444,7 +390,7 @@ with tab5:
 
         st.markdown("---")
 
-        # Row 2: distribución por año y decisión
+        # Row 2: evolución por año
         st.caption("Distribución por año y decisión (stacked)")
         if "year" in df_g.columns and "decision" in df_g.columns:
             df_year = df_g.dropna(subset=["year"])
@@ -467,46 +413,6 @@ with tab5:
             )
             st.altair_chart(chart_year, use_container_width=True)
 
-        st.markdown("---")
-
-        # Row 3: espacio por biblioteca y por decisión
-        st.caption("Espacio por biblioteca (GB)")
-        if "file_size_gb" in df_g.columns:
-            df_space_lib = (
-                df_g.groupby("library")["file_size_gb"]
-                .sum()
-                .reset_index()
-                .rename(columns={"file_size_gb": "space_gb"})
-            )
-            chart_space_lib = (
-                alt.Chart(df_space_lib)
-                .mark_bar()
-                .encode(
-                    x=alt.X("library:N", title="Biblioteca"),
-                    y=alt.Y("space_gb:Q", title="Espacio (GB)"),
-                    tooltip=["library", "space_gb"],
-                )
-            )
-            st.altair_chart(chart_space_lib, use_container_width=True)
-
-            st.caption("Espacio por decisión (GB)")
-            df_space_dec = (
-                df_g.groupby("decision")["file_size_gb"]
-                .sum()
-                .reset_index()
-                .rename(columns={"file_size_gb": "space_gb"})
-            )
-            chart_space_dec = (
-                alt.Chart(df_space_dec)
-                .mark_bar()
-                .encode(
-                    x=alt.X("decision:N", title="Decisión"),
-                    y=alt.Y("space_gb:Q", title="Espacio (GB)"),
-                    tooltip=["decision", "space_gb"],
-                )
-            )
-            st.altair_chart(chart_space_dec, use_container_width=True)
-
 
 # ----------------------------------------------------
 # Tab 6: Sugerencias de metadata
@@ -527,6 +433,7 @@ with tab6:
             "- La columna **action** indica: `AUTO_APPLY`, `MAYBE` o `REVIEW`."
         )
 
+        # Creamos una columna de label de confianza (baja / media / alta)
         def confidence_label(c):
             try:
                 c = float(c)
