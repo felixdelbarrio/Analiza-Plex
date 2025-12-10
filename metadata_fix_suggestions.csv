@@ -1,0 +1,35 @@
+library,plex_title,plex_year,plex_imdb_id,plex_imdb_rating,plex_imdb_votes,suspicious_reason,suggested_imdb_id,suggested_title,suggested_year,suggested_imdb_rating,suggested_imdb_votes,suggested_score,confidence,action,search_title,search_translated
+Animación 2D,La Estrella de Laura,2004,tt0416908,6.3,837,few_votes,tt0416908,Lauras Stern,2004,6.3,837,93.51622009315139,93,AUTO_APPLY,Lauras Stern,False
+Animación 2D,Jorge el curioso 3: Vuelta a la jungla,2015,tt4622340,5.5,736,"low_rating,few_votes",tt4622340,Curious George 3: Back to the Jungle,2015,5.5,736,90.83733743929525,90,AUTO_APPLY,Curious George 3: Back to the Jungle,False
+Animación 2D,Jorge el Curioso: Unas navidades muy monas,2009,tt1570964,6.4,757,few_votes,tt1570964,Curious George: A Very Monkey Christmas,2009,6.4,757,93.59834602816026,93,AUTO_APPLY,Curious George: A Very Monkey Christmas,False
+Animación 2D,Tod y Toby 2,2006,tt0465997,5.3,4449,low_rating,tt0465997,The Fox and the Hound 2,2006,5.3,4449,94.14180005490466,94,AUTO_APPLY,The Fox and the Hound 2,False
+Animación 3D,"Ant Bully, bienvenido al hormiguero",2006,tt0429589,5.8,43743,low_rating,tt0429589,The Ant Bully,2006,5.8,43743,100.60459246443864,100,AUTO_APPLY,The Ant Bully,False
+Animación 3D,Ballerina,2016,tt5349632,6.8,48,few_votes,tt5349632,The Ballerina,2016,6.8,48,80.85098040014257,80,AUTO_APPLY,Ballerina,False
+Animación 3D,El diario de Greg en Navidad: Atrapados en la nieve,2023,tt29033964,5.9,1646,"low_rating,few_votes",tt29033964,Diary of a Wimpy Kid Christmas: Cabin Fever,2023,5.9,1646,93.78346799584878,93,AUTO_APPLY,Diary of a Wimpy Kid Christmas: Cabin Fever,False
+Animación 3D,El principito,2015,tt5104822,,,no_external_data,tt5104822,"Le petit prince, l'ange et le panda",2015,,,40.0,40,MAYBE,Le petit prince,False
+Animación 3D,Gnomeo y Julieta,2011,tt0377981,5.9,62789,low_rating,tt0377981,Gnomeo & Juliet,2011,5.9,62789,101.68945241529175,100,AUTO_APPLY,Gnomeo & Juliet,False
+Animación 3D,Happy Feet 2,2011,tt1402488,5.8,48687,low_rating,tt1402488,Happy Feet Two,2011,5.8,48687,100.83710967507047,100,AUTO_APPLY,Happy Feet Two,False
+Animación 3D,Ice Age 5 : El gran cataclismo,2016,tt3416828,5.7,83066,low_rating,tt3416828,Ice Age: Collision Course,2016,5.7,83066,101.69714263009357,100,AUTO_APPLY,Ice Age: Collision Course,False
+Animación 3D,La mecánica del corazón,2013,tt5693590,6.3,7,few_votes,tt5693590,Dionysos: Jack et la Mécanique du coeur,2013,6.3,7,63.41544993495972,63,MAYBE,Jack et la mécanique du cœur,False
+Animación 3D,Los Mitchell contra las máquinas,2021,tt26947061,,,no_external_data,tt26947061,Subculture Film Reviews - THE MITCHELLS VS THE MACHINES (2021),2021,,,40.0,40,MAYBE,The Mitchells vs the Machines,False
+Animación 3D,Marianne y la pócima del amor (Strange Magic),2015,tt4191054,5.8,12994,low_rating,tt4191054,Strange Magic,2015,5.8,12994,97.96888141918517,97,AUTO_APPLY,Strange Magic,False
+Animación 3D,Marte necesita madres,2011,tt1305591,5.4,24948,low_rating,tt1305591,Mars Needs Moms,2011,5.4,24948,98.18526571509055,98,AUTO_APPLY,Mars Needs Moms,False
+Animación 3D,Pesadilla antes de Navidad,1993,tt1028555,7.8,53,few_votes,tt1028555,The Making of Tim Burton's 'The Nightmare Before Christmas',1993,7.8,53,72.06196879911484,72,AUTO_APPLY,Tim Burton's the Nightmare Before Christmas,False
+Animación 3D,¡Piratas!,2012,tt2322625,6.5,67,few_votes,tt2322625,The Pirates in an Adventure with Scientists T4 Movie Special,2012,6.5,67,68.66254456353118,68,MAYBE,The Pirates! In an Adventure with Scientists!,False
+Anime,Neon Genesis Evangelion: Death (True)²,1998,tt28717062,6.5,663,few_votes,tt28717062,Evangelion: Death (True)²,1998,6.5,663,89.61084039684009,89,AUTO_APPLY,EVANGELION:DEATH(TRUE)²,False
+Anime,Evangelion: 3.0 You Can (Not) Redo,2012,tt3254456,,11,few_votes,tt3254456,AMC Lincoln Live Q & A,2012,,11,49.395906230238126,49,MAYBE,ヱヴァンゲリヲン新劇場版:Q,False
+Anime,¿Quién es el 11º pasajero?,1986,tt0242367,6.3,26,few_votes,tt0242367,Circus of the Stars #11,1986,6.3,26,66.05681882079493,66,MAYBE,11人いる!,False
+Asia,La maldición 2 (The Grudge 2),2003,tt0322259,5.9,315809,low_rating,tt0322259,2 Fast 2 Furious,2003,5.9,315809,85.19712938827365,85,AUTO_APPLY,呪怨2,False
+Cine Clasico,Rebeca,1982,tt0127920,5.4,199,"low_rating,few_votes",tt0127920,The Taming of Rebecca,1982,5.4,199,67.70514997831991,67,MAYBE,Rebecca,False
+Cortos animación,Al Dente,1998,tt0291011,5.2,112,"low_rating,few_votes",tt0291011,Al Dente,1998,5.2,112,85.8653922174171,85,AUTO_APPLY,Al Dente,False
+Cortos animación,Control Bear: Wonder Garden,2013,tt5068570,6.2,89,few_votes,tt5068570,Control Bear: Wonder Garden,2013,6.2,89,68.37121254719662,68,MAYBE,Wonder Garden,False
+Cortos animación,Fábulas Disney - Vol.1,2005,tt3095020,7.5,32,few_votes,tt3095020,Timeless Tales,2005,7.5,32,90.09256969938944,90,AUTO_APPLY,Timeless Tales,False
+Cortos animación,Gopher Broke,2004,tt0438064,6.5,1424,few_votes,tt0438064,Gopher Broke,2004,6.5,1424,95.26907432172264,95,AUTO_APPLY,Gopher Broke,False
+Cortos animación,Home : Destino Home,2014,tt3597380,6.3,766,few_votes,tt3597380,Almost Home,2014,6.3,766,93.32397681974491,93,AUTO_APPLY,Almost Home,False
+Cortos animación,Los Pitufos: Cuento de Navidad,2011,tt2062677,6.1,1674,few_votes,tt2062677,The Smurfs: A Christmas Carol,2011,6.1,1674,94.42007405686431,94,AUTO_APPLY,The Smurfs: A Christmas Carol,False
+Cortos animación,Minions: Cachorro,2013,tt3405276,7.3,1995,few_votes,tt3405276,Puppy!,2013,7.3,1995,96.40080268475677,96,AUTO_APPLY,Puppy,False
+Cortos animación,Minions: Pánico en la sala de envíos,2013,tt3425332,6.5,1697,few_votes,tt3425332,Panic in the Mailroom,2013,6.5,1697,95.64968842953967,95,AUTO_APPLY,Panic in the Mailroom,False
+Cortos animación,La nostalgia del Sr. Alambre,2009,tt1377753,7.0,51,few_votes,tt1377753,La nostalgia del Sr. Alambre,2009,7.0,51,89.580016718174,89,AUTO_APPLY,La nostalgia del Sr. Alambre,False
+Cortos animación,Órbitas,2013,tt3432050,6.4,72,few_votes,tt3432050,Órbitas,2013,6.4,72,88.51661430060228,88,AUTO_APPLY,Órbitas,False
+Películas,El 47,2024,tt27751957,7.6,711,few_votes,tt27751957,El 47,2024,7.6,711,97.06239996818428,97,AUTO_APPLY,El 47,False
+Películas,(500) días juntos,2009,tt1572162,7.7,43,few_votes,tt1572162,Not a Love Story: Making (500) Days of Summer,2009,7.7,43,71.31726338243094,71,AUTO_APPLY,(500) Days of Summer,False

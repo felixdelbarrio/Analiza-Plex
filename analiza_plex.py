@@ -9,6 +9,15 @@ from typing import Optional, Dict, Any, List, Tuple
 from dotenv import load_dotenv
 from plexapi.server import PlexServer
 
+# Intento opcional de usar un traductor para mejorar búsquedas OMDb
+try:
+    from googletrans import Translator  # pip install googletrans==4.0.0-rc1
+    _TRANSLATOR = Translator()
+    print("INFO: googletrans disponible, se podrá traducir títulos ES->EN si es necesario.")
+except Exception:
+    _TRANSLATOR = None
+    print("INFO: googletrans NO disponible, no se traducirán títulos automáticamente.")
+
 # ============================================================
 #              CARGA DE CONFIGURACIÓN DESDE .env
 # ============================================================
@@ -49,11 +58,15 @@ METADATA_MIN_VOTES_FOR_OK = int(os.getenv("METADATA_MIN_VOTES_FOR_OK", "2000"))
 METADATA_DRY_RUN = os.getenv("METADATA_DRY_RUN", "true").lower() == "true"
 METADATA_APPLY_CHANGES = os.getenv("METADATA_APPLY_CHANGES", "false").lower() == "true"
 
+# Reintentar entradas de caché sin rating/votos
+OMDB_RETRY_EMPTY_CACHE = os.getenv("OMDB_RETRY_EMPTY_CACHE", "false").lower() == "true"
+
 print("DEBUG PLEX_BASEURL:", PLEX_BASEURL)
 print("DEBUG TOKEN:", "****" if PLEX_TOKEN else None)
 print("DEBUG EXCLUDE_LIBRARIES:", EXCLUDE_LIBRARIES)
 print("DEBUG METADATA_DRY_RUN:", METADATA_DRY_RUN)
 print("DEBUG METADATA_APPLY_CHANGES:", METADATA_APPLY_CHANGES)
+print("DEBUG OMDB_RETRY_EMPTY_CACHE:", OMDB_RETRY_EMPTY_CACHE)
 
 # ============================================================
 #                      CACHE OMDb LOCAL
@@ -107,80 +120,21 @@ def get_imdb_id_from_plex_guid(guid: Optional[str]) -> Optional[str]:
             return None
     return None
 
+
+def get_best_search_title(movie) -> str:
+    """
+    Devuelve el mejor título posible para buscar en OMDb:
+    - originalTitle si existe (suele ser el título original)
+    - si no, title normal (en español o lo que haya).
+    """
+    title = getattr(movie, "originalTitle", None)
+    if title and isinstance(title, str) and title.strip():
+        return title
+    return movie.title
+
 # ============================================================
 #               CONSULTA A OMDb + CACHE + DELAY
 # ============================================================
-
-def query_omdb(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Envoltura genérica para OMDb:
-    - Usa cache
-    - Respeta rate limit
-    - Si se alcanza el límite y persiste, desactiva OMDb para el resto
-      de la ejecución (OMDB_DISABLED=True) y devuelve None para nuevas peticiones
-      (pero se sigue usando la caché existente).
-    """
-    global OMDB_DISABLED
-
-    if not OMDB_API_KEY:
-        raise RuntimeError("No hay OMDB_API_KEY en .env")
-
-    key = json.dumps(params, sort_keys=True, ensure_ascii=False)
-
-    # 1) Siempre mirar la caché aunque OMDB esté desactivado
-    if key in omdb_cache:
-        return omdb_cache[key]
-
-    # 2) Si OMDB está desactivado, no hacemos llamadas nuevas
-    if OMDB_DISABLED:
-        return None
-
-    attempts = 0
-    base_params = dict(params)
-    base_params["apikey"] = OMDB_API_KEY
-
-    while True:
-        time.sleep(0.5)
-        try:
-            resp = requests.get("https://www.omdbapi.com/", params=base_params, timeout=10)
-            data = resp.json()
-        except Exception as e:
-            print(f"Error consultando OMDb con params={params}: {e}")
-            return None
-
-        # Rate limit de OMDb
-        if data.get("Error") == "Request limit reached!":
-            if attempts < OMDB_RATE_LIMIT_MAX_RETRIES:
-                attempts += 1
-                print("\n🚨 OMDb ha devuelto 'Request limit reached!'")
-                print(
-                    f"⏸ Esperando {OMDB_RATE_LIMIT_WAIT_SECONDS} segundos antes de reintentar "
-                    f"(intento {attempts}/{OMDB_RATE_LIMIT_MAX_RETRIES})...\n"
-                )
-                time.sleep(OMDB_RATE_LIMIT_WAIT_SECONDS)
-                continue
-            else:
-                print("\n🚨 OMDb sigue devolviendo 'Request limit reached!' tras reintentos.")
-                print("⚠️ OMDb se desactiva para el resto de esta ejecución.")
-                print("   Se continuará el análisis SIN datos nuevos de OMDb,")
-                print("   pero se seguirá utilizando la caché local existente.\n")
-                OMDB_DISABLED = True
-                return None
-
-        # Guardamos en caché y devolvemos
-        omdb_cache[key] = data
-        save_cache(omdb_cache)
-        return data
-
-
-def query_omdb_by_imdb_id(imdb_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    if not imdb_id:
-        return None
-    data = query_omdb({"i": imdb_id, "type": "movie"})
-    if not data or data.get("Response") != "True":
-        return None
-    return data
-
 
 def extract_ratings_from_omdb(data: Optional[Dict[str, Any]]) -> Tuple[Optional[float], Optional[int], Optional[int]]:
     imdb_rating = None
@@ -240,6 +194,128 @@ def extract_ratings_from_omdb_detail(data: Dict[str, Any]) -> Tuple[Optional[flo
         pass
 
     return imdb_rating, imdb_votes
+
+
+def is_omdb_data_empty_for_ratings(data: Optional[Dict[str, Any]]) -> bool:
+    """
+    Devuelve True si la respuesta de OMDb es básicamente inútil para ratings:
+    - data es None
+    - o Response != "True"
+    - o imdbRating es N/A / vacío Y imdbVotes es vacío/0.
+    """
+    if not data:
+        return True
+
+    if data.get("Response") != "True":
+        return True
+
+    rating = data.get("imdbRating")
+    votes = data.get("imdbVotes")
+
+    rating_empty = (not rating) or (rating == "N/A")
+    votes_str = (votes or "").replace(",", "").strip()
+    votes_empty_or_zero = (votes_str == "") or (votes_str == "0")
+
+    return rating_empty and votes_empty_or_zero
+
+
+def query_omdb(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Envoltura genérica para OMDb:
+    - Usa cache
+    - Respeta rate limit
+    - Si se alcanza el límite y persiste, desactiva OMDb para el resto
+      de la ejecución (OMDB_DISABLED=True) y devuelve None para nuevas peticiones
+      (pero se sigue utilizando la caché existente).
+    - Si OMDB_RETRY_EMPTY_CACHE=true y la entrada de cache no tiene rating/votos,
+      se ignora esa cache y se reintenta contra OMDb (mientras no esté desactivado).
+    """
+    global OMDB_DISABLED
+
+    if not OMDB_API_KEY:
+        raise RuntimeError("No hay OMDB_API_KEY en .env")
+
+    key = json.dumps(params, sort_keys=True, ensure_ascii=False)
+
+    # 1) Mirar caché primero
+    if key in omdb_cache:
+        cached = omdb_cache[key]
+
+        if not OMDB_RETRY_EMPTY_CACHE:
+            return cached
+
+        if not is_omdb_data_empty_for_ratings(cached):
+            return cached
+
+        print(f"INFO: cache OMDb 'vacía' para params={params}, reintentando consulta a OMDb...")
+
+    # 2) Si OMDb está desactivado, no hacemos llamadas nuevas
+    if OMDB_DISABLED:
+        return omdb_cache.get(key)
+
+    attempts = 0
+    base_params = dict(params)
+    base_params["apikey"] = OMDB_API_KEY
+
+    while True:
+        time.sleep(0.5)
+        try:
+            resp = requests.get("https://www.omdbapi.com/", params=base_params, timeout=10)
+            data = resp.json()
+        except Exception as e:
+            print(f"Error consultando OMDb con params={params}: {e}")
+            return omdb_cache.get(key)
+
+        # Rate limit de OMDb
+        if data.get("Error") == "Request limit reached!":
+            if attempts < OMDB_RATE_LIMIT_MAX_RETRIES:
+                attempts += 1
+                print("\n🚨 OMDb ha devuelto 'Request limit reached!'")
+                print(
+                    f"⏸ Esperando {OMDB_RATE_LIMIT_WAIT_SECONDS} segundos antes de reintentar "
+                    f"(intento {attempts}/{OMDB_RATE_LIMIT_MAX_RETRIES})...\n"
+                )
+                time.sleep(OMDB_RATE_LIMIT_WAIT_SECONDS)
+                continue
+            else:
+                print("\n🚨 OMDb sigue devolviendo 'Request limit reached!' tras reintentos.")
+                print("⚠️ OMDb se desactiva para el resto de esta ejecución.")
+                print("   Se continuará el análisis SIN datos nuevos de OMDb,")
+                print("   pero se seguirá utilizando la caché local existente.\n")
+                OMDB_DISABLED = True
+                return omdb_cache.get(key)
+
+        # Guardamos en caché y devolvemos
+        omdb_cache[key] = data
+        save_cache(omdb_cache)
+        return data
+
+
+def query_omdb_by_imdb_id(imdb_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not imdb_id:
+        return None
+    data = query_omdb({"i": imdb_id, "type": "movie"})
+    if not data or data.get("Response") != "True":
+        return None
+    return data
+
+# ============================================================
+#               TRADUCCIÓN ES -> EN (opcional)
+# ============================================================
+
+def translate_to_english(text: str) -> str:
+    """
+    Intenta traducir 'text' a inglés usando googletrans.
+    Si falla o no hay traductor, devuelve el texto original.
+    """
+    if not _TRANSLATOR:
+        return text
+
+    try:
+        res = _TRANSLATOR.translate(text, src="es", dest="en")
+        return res.text or text
+    except Exception:
+        return text
 
 # ============================================================
 #                    DECISIÓN KEEP / DELETE
@@ -343,6 +419,7 @@ def write_html_interactive(path, rows):
             "reason": r.get("reason", ""),
             "misidentified_hint": r.get("misidentified_hint", ""),
             "file": r.get("file", ""),
+            "poster_url": r.get("poster_url", ""),
         })
 
     rows_json = json.dumps(safe_rows, ensure_ascii=False)
@@ -394,6 +471,10 @@ table.dataTable thead th {{
     padding: 1rem;
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }}
+.poster {{
+    max-width: 40px;
+    border-radius: 3px;
+}}
 </style>
 </head>
 <body>
@@ -416,6 +497,7 @@ table.dataTable thead th {{
   <table id="movies" class="display" style="width:100%">
     <thead>
       <tr>
+        <th>Poster</th>
         <th>Library</th>
         <th>Title</th>
         <th>Year</th>
@@ -440,8 +522,12 @@ function buildTables() {{
     rows.forEach(r => {{
         const cls = r.decision === 'DELETE' ? 'bad-delete' :
                     (r.decision === 'MAYBE' ? 'maybe-row' : '');
+        const poster = r.poster_url
+            ? `<img src="${{r.poster_url}}" class="poster" />`
+            : '';
         const tr = $(`
             <tr class="${{cls}}">
+                <td>${{poster}}</td>
                 <td>${{r.library || ''}}</td>
                 <td>${{r.title || ''}}</td>
                 <td>${{r.year || ''}}</td>
@@ -459,7 +545,7 @@ function buildTables() {{
 
     $('#movies').DataTable({{
         pageLength: 50,
-        order: [[3, 'asc']],
+        order: [[4, 'asc']],
     }});
 }}
 
@@ -563,13 +649,39 @@ $(document).ready(function() {{
 # ============================================================
 
 def search_omdb_candidates(title: str, year: Optional[int]) -> List[Dict[str, Any]]:
-    params = {"s": title, "type": "movie"}
+    """
+    Intenta primero búsqueda exacta (t=) y luego búsqueda por lista (s=).
+    Devuelve siempre una lista de candidatos homogénea.
+    """
+    results: List[Dict[str, Any]] = []
+
+    # 1) Intento exacto
+    params_exact = {"t": title, "type": "movie"}
     if year:
-        params["y"] = str(year)
-    data = query_omdb(params)
-    if not data or data.get("Response") != "True":
+        params_exact["y"] = str(year)
+
+    data_exact = query_omdb(params_exact)
+    if data_exact and data_exact.get("Response") == "True":
+        results.append({
+            "Title": data_exact.get("Title"),
+            "Year": data_exact.get("Year"),
+            "imdbID": data_exact.get("imdbID"),
+            "Type": data_exact.get("Type"),
+            "Poster": data_exact.get("Poster"),
+            "_from_exact": True,
+        })
+        return results
+
+    # 2) Búsqueda general
+    params_search = {"s": title, "type": "movie"}
+    if year:
+        params_search["y"] = str(year)
+
+    data_search = query_omdb(params_search)
+    if not data_search or data_search.get("Response") != "True":
         return []
-    results = data.get("Search", [])
+
+    results = data_search.get("Search", [])
     return results if isinstance(results, list) else []
 
 
@@ -609,11 +721,14 @@ def score_candidate(plex_title: str, plex_year: Optional[int], cand: Dict[str, A
     return score
 
 
-def find_best_omdb_match(title: str, year: Optional[int]) -> Optional[Dict[str, Any]]:
+def find_best_omdb_match_with_translation(title: str, year: Optional[int]) -> Optional[Dict[str, Any]]:
+    """
+    1) Busca candidatos con el título tal cual.
+    2) Si no hay buen candidato, intenta traducir el título al inglés y repetir.
+    Devuelve el mejor candidato (si existe) con metadatos extra.
+    """
+    # --- 1) Primer intento: título tal cual ---
     candidates = search_omdb_candidates(title, year)
-    if not candidates:
-        return None
-
     best = None
     best_score = -1.0
 
@@ -623,25 +738,62 @@ def find_best_omdb_match(title: str, year: Optional[int]) -> Optional[Dict[str, 
             best_score = s
             best = cand
 
-    if not best:
+    MIN_SCORE_GOOD = 40.0
+    if best and best_score >= MIN_SCORE_GOOD:
+        imdb_id = best.get("imdbID")
+        detail = query_omdb_by_imdb_id(imdb_id) if imdb_id else None
+        imdb_rating, imdb_votes = extract_ratings_from_omdb_detail(detail or {})
+
+        return {
+            "imdb_id": imdb_id,
+            "title": best.get("Title"),
+            "year": best.get("Year"),
+            "type": best.get("Type"),
+            "poster": best.get("Poster"),
+            "imdb_rating": imdb_rating,
+            "imdb_votes": imdb_votes,
+            "raw_detail": detail,
+            "score": best_score,
+            "search_title": title,
+            "search_translated": False,
+        }
+
+    # --- 2) Segundo intento: título traducido al inglés ---
+    translated_title = translate_to_english(title)
+
+    if not translated_title or translated_title.strip().lower() == (title or "").strip().lower():
         return None
 
-    imdb_id = best.get("imdbID")
+    candidates_tr = search_omdb_candidates(translated_title, year)
+    best_tr = None
+    best_tr_score = -1.0
+
+    for cand in candidates_tr:
+        s = score_candidate(translated_title, year, cand)
+        if s > best_tr_score:
+            best_tr_score = s
+            best_tr = cand
+
+    if not best_tr:
+        return None
+
+    imdb_id = best_tr.get("imdbID")
     detail = query_omdb_by_imdb_id(imdb_id) if imdb_id else None
     imdb_rating, imdb_votes = extract_ratings_from_omdb_detail(detail or {})
 
-    result = {
+    return {
         "imdb_id": imdb_id,
-        "title": best.get("Title"),
-        "year": best.get("Year"),
-        "type": best.get("Type"),
-        "poster": best.get("Poster"),
+        "title": best_tr.get("Title"),
+        "year": best_tr.get("Year"),
+        "type": best_tr.get("Type"),
+        "poster": best_tr.get("Poster"),
         "imdb_rating": imdb_rating,
         "imdb_votes": imdb_votes,
         "raw_detail": detail,
-        "score": best_score,
+        "score": best_tr_score,
+        "search_title": translated_title,
+        "search_translated": True,
     }
-    return result
 
 
 def is_metadata_suspicious(
@@ -680,7 +832,7 @@ def apply_new_imdb_guid(movie, new_imdb_id: str) -> Tuple[bool, str]:
             )
             return False, msg
 
-        # 🚨 Esta parte puede necesitar ajuste según tu versión de Plex/plexapi
+        # ⚠️ Esta parte puede necesitar ajuste según tu versión de Plex/plexapi
         movie._edit(**{"guid": new_guid})
         movie.reload()
         movie.refresh()
@@ -713,6 +865,8 @@ def write_suggestions_csv(path: str, rows: List[Dict[str, Any]]) -> None:
         "suggested_score",
         "confidence",
         "action",
+        "search_title",
+        "search_translated",
     ]
 
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -739,8 +893,59 @@ def analyze_single_library(section, suggestions: List[Dict[str, Any]], logs: Lis
 
         imdb_id = get_imdb_id_from_plex_guid(getattr(movie, "guid", None))
 
+        # -------------------------
+        # 1) PRIMER INTENTO: por imdb_id
+        # -------------------------
         omdb_data = query_omdb_by_imdb_id(imdb_id) if imdb_id else None
         imdb_rating, imdb_votes, rt_score = extract_ratings_from_omdb(omdb_data)
+
+        poster_url = None
+        if omdb_data:
+            poster_raw = omdb_data.get("Poster")
+            if poster_raw and poster_raw != "N/A":
+                poster_url = poster_raw
+
+        # -------------------------
+        # 2) FALLBACK: por título + año (aprovechando cache)
+        #    Solo si no hemos conseguido NADA (rating, votos, RT)
+        # -------------------------
+        fallback_suggested = None
+        if imdb_rating is None and imdb_votes is None and rt_score is None:
+            search_title = get_best_search_title(movie)
+            try:
+                fallback_suggested = find_best_omdb_match_with_translation(search_title, movie.year)
+            except SystemExit:
+                raise
+            except Exception as e:
+                logs.append(f"[ERROR] Fallback OMDb por título para '{movie.title}': {e}")
+                fallback_suggested = None
+
+            if fallback_suggested and fallback_suggested.get("raw_detail"):
+                detail = fallback_suggested["raw_detail"]
+                # Reaprovechamos extract_ratings_from_omdb para tener RT también
+                imdb_rating2, imdb_votes2, rt_score2 = extract_ratings_from_omdb(detail or {})
+                if imdb_rating2 is not None:
+                    imdb_rating = imdb_rating2
+                if imdb_votes2 is not None:
+                    imdb_votes = imdb_votes2
+                if rt_score2 is not None:
+                    rt_score = rt_score2
+
+                # Si Plex no tenía imdb_id, lo rellenamos con el sugerido
+                if not imdb_id:
+                    imdb_id = fallback_suggested.get("imdb_id") or imdb_id
+
+                # Poster desde sugerencia (si no lo teníamos ya)
+                if not poster_url:
+                    poster_raw = fallback_suggested.get("poster")
+                    if poster_raw and poster_raw != "N/A":
+                        poster_url = poster_raw
+
+                logs.append(
+                    f"[FALLBACK] '{movie.title}' -> datos OMDb vía título "
+                    f"(search='{fallback_suggested.get('search_title')}', "
+                    f"translated={fallback_suggested.get('search_translated')})"
+                )
 
         decision, reason = decide_keep_or_delete_with_reason(
             imdb_rating, imdb_votes, rt_score
@@ -797,7 +1002,8 @@ def analyze_single_library(section, suggestions: List[Dict[str, Any]], logs: Lis
             "file": file_path,
             "file_size": file_size,            # bytes desde Plex (suma de todas las parts)
             "ratingKey": movie.ratingKey,
-            "thumb": movie.thumb,
+            "thumb": movie.thumb,              # lo dejamos por compatibilidad, pero no es obligatorio
+            "poster_url": poster_url,          # URL del póster de OMDb (por ID o por fallback)
             "decision": decision,
             "reason": reason,
             "misidentified_hint": misid_flag,
@@ -808,16 +1014,22 @@ def analyze_single_library(section, suggestions: List[Dict[str, Any]], logs: Lis
         if not suspicious:
             continue
 
-        try:
-            suggested = find_best_omdb_match(movie.title, movie.year)
-        except SystemExit:
-            raise
-        except Exception as e:
-            logs.append(f"[ERROR] Buscando match OMDb para '{movie.title}': {e}")
-            continue
+        search_title = get_best_search_title(movie)
+
+        # Reutilizamos el fallback_suggested si ya lo calculamos antes
+        if fallback_suggested:
+            suggested = fallback_suggested
+        else:
+            try:
+                suggested = find_best_omdb_match_with_translation(search_title, movie.year)
+            except SystemExit:
+                raise
+            except Exception as e:
+                logs.append(f"[ERROR] Buscando match OMDb para '{movie.title}': {e}")
+                suggested = None
 
         if not suggested:
-            logs.append(f"[INFO] Sin sugerencia clara para '{movie.title}'")
+            logs.append(f"[INFO] Sin sugerencia clara para '{movie.title}' (título búsqueda='{search_title}')")
             continue
 
         raw_score = suggested.get("score", 0.0)
@@ -828,6 +1040,8 @@ def analyze_single_library(section, suggestions: List[Dict[str, Any]], logs: Lis
         suggested_year = suggested.get("year")
         suggested_imdb_rating = suggested.get("imdb_rating")
         suggested_imdb_votes = suggested.get("imdb_votes")
+        suggested_search_title = suggested.get("search_title", search_title)
+        suggested_search_translated = suggested.get("search_translated", False)
 
         action = "REVIEW"
         if confidence >= 70:
@@ -851,6 +1065,8 @@ def analyze_single_library(section, suggestions: List[Dict[str, Any]], logs: Lis
             "suggested_score": raw_score,
             "confidence": confidence,
             "action": action,
+            "search_title": suggested_search_title,
+            "search_translated": suggested_search_translated,
         })
 
         if action == "AUTO_APPLY" and suggested_imdb_id:
@@ -859,7 +1075,8 @@ def analyze_single_library(section, suggestions: List[Dict[str, Any]], logs: Lis
         else:
             logs.append(
                 f"[INFO] '{movie.title}' -> sugerido imdb_id={suggested_imdb_id} "
-                f"(conf={confidence}, action={action})"
+                f"(conf={confidence}, action={action}, search='{suggested_search_title}', "
+                f"translated={suggested_search_translated})"
             )
 
     return rows

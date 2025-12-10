@@ -1,10 +1,11 @@
 import os
-import pandas as pd
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 import altair as alt
 from dotenv import load_dotenv
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 # ----------------------------------------------------
 # Carga de .env
@@ -18,29 +19,31 @@ DELETE_REQUIRE_CONFIRM = os.getenv("DELETE_REQUIRE_CONFIRM", "true").lower() == 
 ALL_CSV = f"{OUTPUT_PREFIX}_all.csv"
 FILTERED_CSV = f"{OUTPUT_PREFIX}_filtered.csv"
 
-# Para las sugerencias de metadata
 METADATA_OUTPUT_PREFIX = os.getenv("METADATA_OUTPUT_PREFIX", "metadata_fix")
 METADATA_SUGG_CSV = f"{METADATA_OUTPUT_PREFIX}_suggestions.csv"
 
+# ----------------------------------------------------
+# Estado global del modal
+# ----------------------------------------------------
+if "modal_open" not in st.session_state:
+    st.session_state["modal_open"] = False
+if "modal_row" not in st.session_state:
+    st.session_state["modal_row"] = None
+
 
 # ----------------------------------------------------
-# Función de borrado reutilizando la lógica del script
+# Función de borrado
 # ----------------------------------------------------
-def delete_files_from_rows(rows):
-    """
-    rows: DataFrame con columnas al menos: title, file, reason, misidentified_hint
-    Respeta DELETE_DRY_RUN y DELETE_REQUIRE_CONFIRM.
-    Devuelve (num_ok, num_error, logs)
-    """
+def delete_files_from_rows(rows: pd.DataFrame):
     num_ok = 0
     num_error = 0
     logs = []
 
     for _, row in rows.iterrows():
-        title = row.get("title")
         file_path = row.get("file")
+        title = row.get("title")
 
-        if not file_path or str(file_path).strip() == "":
+        if not file_path:
             logs.append(f"[SKIP] {title} -> sin ruta de archivo")
             continue
 
@@ -50,7 +53,7 @@ def delete_files_from_rows(rows):
             continue
 
         if DELETE_DRY_RUN:
-            logs.append(f"[DRY RUN] {title} -> NO se borra (DELETE_DRY_RUN=true): {file_path}")
+            logs.append(f"[DRY RUN] {title} -> NO se borra: {file_path}")
             continue
 
         try:
@@ -58,96 +61,359 @@ def delete_files_from_rows(rows):
             logs.append(f"[OK] BORRADO {title} -> {file_path}")
             num_ok += 1
         except Exception as e:
-            logs.append(f"[ERROR] {title} -> {file_path} ({e})")
+            logs.append(f"[ERROR] {title}: {e}")
             num_error += 1
 
     return num_ok, num_error, logs
 
 
 # ----------------------------------------------------
-# Configuración Streamlit
+# Helpers de presentación / datos
+# ----------------------------------------------------
+def clean_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Quitamos columnas claramente redundantes en el dashboard."""
+    cols = [c for c in df.columns if c != "thumb"]
+    return df[cols]
+
+
+def aggrid_with_row_click(df: pd.DataFrame, key_suffix: str):
+    """
+    AgGrid → selección por click → devuelve dict con todos los valores de la fila.
+    El grid solo muestra las columnas mínimas operativas,
+    el resto quedan ocultas pero disponibles para el detalle.
+    """
+    if df.empty:
+        st.info("No hay datos para mostrar.")
+        return None
+
+    # Columnas visibles y su orden
+    desired_order = [
+        "title",
+        "year",
+        "library",
+        "imdb_rating",
+        "imdb_votes",
+        "rt_score",
+        "plex_rating",
+        "decision",
+        "reason",
+    ]
+    visible_cols = [c for c in desired_order if c in df.columns]
+
+    # Reordenamos df: visibles primero, luego resto
+    ordered_cols = visible_cols + [c for c in df.columns if c not in visible_cols]
+    df = df[ordered_cols]
+
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_selection(selection_mode="single", use_checkbox=False)
+    gb.configure_grid_options(domLayout="normal")
+
+    # Ocultar las no visibles (incluida file, poster_url, etc.)
+    for col in df.columns:
+        if col not in visible_cols:
+            gb.configure_column(col, hide=True)
+
+    grid_options = gb.build()
+
+    grid_response = AgGrid(
+        df,
+        gridOptions=grid_options,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        enable_enterprise_modules=False,
+        fit_columns_on_grid_load=True,
+        height=520,
+        key=f"aggrid_{key_suffix}",
+    )
+
+    selected_raw = grid_response.get("selected_rows", None)
+
+    if selected_raw is None:
+        return None
+
+    if isinstance(selected_raw, pd.DataFrame):
+        selected_raw = selected_raw.to_dict(orient="records")
+
+    if not isinstance(selected_raw, list):
+        selected_raw = list(selected_raw)
+
+    if len(selected_raw) == 0:
+        return None
+
+    partial = selected_raw[0]
+    final_row = {col: partial.get(col, None) for col in df.columns}
+
+    return final_row
+
+
+def render_detail_card(row: dict, show_modal_button=True):
+    """
+    Panel lateral / ficha de detalle tipo Plex.
+    """
+    if row is None:
+        st.info("Haz click en una fila para ver su detalle.")
+        return
+
+    def safe(*keys):
+        for k in keys:
+            if k is None:
+                continue
+            v = row.get(k, None)
+            if v is not None and str(v).strip() not in ("", "nan", "None"):
+                return v
+        return None
+
+    title = safe("title") or "(sin título)"
+    year = safe("year")
+    library = safe("library")
+    decision = safe("decision")
+    reason = safe("reason")
+    imdb_rating = safe("imdb_rating")
+    rt_score = safe("rt_score")
+    imdb_votes = safe("imdb_votes")
+    imdb_id = safe("imdb_id")
+    poster_url = safe("poster_url")
+    file_path = safe("file")
+    file_size = safe("file_size")
+    rating_key = safe("ratingKey")
+    trailer_url = safe("trailer_url")
+
+    # Campos OMDb extra
+    rated = safe("Rated", "rated")
+    released = safe("Released", "released")
+    runtime = safe("Runtime", "runtime")
+    genre = safe("Genre", "genre")
+    director = safe("Director", "director")
+    writer = safe("Writer", "writer")
+    actors = safe("Actors", "actors")
+    language = safe("Language", "language")
+    country = safe("Country", "country")
+    awards = safe("Awards", "awards")
+
+    # Sinopsis: ahora comprobamos también "Plot" con mayúscula
+    plot = (
+        safe("plot", "Plot")
+        or safe("summary")
+        or safe("overview")
+        or safe("description")
+    )
+
+    col_left, col_right = st.columns([1, 2])
+
+    # ------------- POSTER PANEL -------------
+    with col_left:
+        if poster_url and str(poster_url).strip() and str(poster_url).lower() not in ("nan", "none"):
+            st.image(poster_url, width=280)
+        else:
+            st.write("📷 Sin póster")
+
+        if imdb_id:
+            imdb_url = f"https://www.imdb.com/title/{imdb_id}"
+            st.markdown(f"[🎬 Ver en IMDb]({imdb_url})")
+
+        plex_base = os.getenv("PLEX_WEB_BASEURL", "")
+        if plex_base and rating_key:
+            plex_url = f"{plex_base}/web/index.html#!/server/library/metadata/{rating_key}"
+            st.markdown(f"[📺 Ver en Plex Web]({plex_url})")
+
+        if show_modal_button:
+            if st.button("🪟 Abrir en ventana"):
+                st.session_state["modal_row"] = row
+                st.session_state["modal_open"] = True
+                st.rerun()
+
+    # ------------- DETAIL PANEL -------------
+    with col_right:
+        header = title
+        try:
+            if pd.notna(year):
+                header += f" ({int(year)})"
+        except Exception:
+            pass
+
+        st.markdown(f"### {header}")
+        st.write(f"**Biblioteca:** {library}")
+        st.write(f"**Decisión:** `{decision}` — {reason}")
+
+        # Métricas principales
+        m1, m2, m3 = st.columns(3)
+        m1.metric("IMDb", f"{imdb_rating}" if pd.notna(imdb_rating) else "N/A")
+        m2.metric("RT", f"{rt_score}%" if pd.notna(rt_score) else "N/A")
+        m3.metric("Votos", int(imdb_votes) if pd.notna(imdb_votes) else "N/A")
+
+        # Bloque OMDb info básica
+        st.markdown("---")
+        st.write("#### Información OMDb")
+
+        cols_basic = st.columns(4)
+        with cols_basic[0]:
+            if rated:
+                st.write(f"**Rated:** {rated}")
+        with cols_basic[1]:
+            if released:
+                st.write(f"**Estreno:** {released}")
+        with cols_basic[2]:
+            if runtime:
+                st.write(f"**Duración:** {runtime}")
+        with cols_basic[3]:
+            if genre:
+                st.write(f"**Género:** {genre}")
+
+        # Créditos
+        st.write("")
+        cols_credits = st.columns(3)
+        with cols_credits[0]:
+            if director:
+                st.write(f"**Director:** {director}")
+        with cols_credits[1]:
+            if writer:
+                st.write(f"**Guion:** {writer}")
+        with cols_credits[2]:
+            if actors:
+                st.write(f"**Reparto:** {actors}")
+
+        # Producción / premios
+        st.write("")
+        cols_prod = st.columns(3)
+        with cols_prod[0]:
+            if language:
+                st.write(f"**Idioma(s):** {language}")
+        with cols_prod[1]:
+            if country:
+                st.write(f"**País:** {country}")
+        with cols_prod[2]:
+            if awards:
+                st.write(f"**Premios:** {awards}")
+
+        # Sinopsis
+        if plot and str(plot).strip():
+            st.markdown("---")
+            st.write("#### Sinopsis")
+            st.write(str(plot))
+
+        # Archivo
+        st.markdown("---")
+        st.write("#### Archivo")
+        if file_path:
+            st.code(file_path, language="bash")
+        if pd.notna(file_size):
+            try:
+                gb = float(file_size) / (1024 ** 3)
+                st.write(f"**Tamaño:** {gb:.2f} GB")
+            except Exception:
+                pass
+
+        # Tráiler
+        if trailer_url and str(trailer_url).strip() and str(trailer_url).lower() not in ("nan", "none"):
+            st.markdown("#### 🎞 Tráiler")
+            st.video(trailer_url)
+
+    # JSON completo
+    with st.expander("Ver JSON completo"):
+        st.json(row)
+
+
+def render_modal():
+    """
+    Ventana modal superpuesta — usa sesión como estado.
+    ❗ Sin overlay oscurecedor: solo una caja flotante coherente con el tema.
+    """
+    if not st.session_state["modal_open"]:
+        return
+
+    row = st.session_state["modal_row"]
+    if row is None:
+        return
+
+    # Solo la caja: nada de overlay oscuro para que el brillo sea idéntico al resto
+    st.markdown(
+        """
+        <style>
+        :root {
+            --main-bg: var(--background-color, #0e1117);
+            --sec-bg: var(--secondary-background-color, #262730);
+            --txt: var(--text-color, #fafafa);
+        }
+
+        .modal-box {
+            position: fixed;
+            top: 5%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80%;
+            max-height: 85%;
+            overflow-y: auto;
+            background: var(--sec-bg);
+            border-radius: 14px;
+            padding: 24px 28px;
+            z-index: 10001;
+            box-shadow: 0 24px 48px rgba(0,0,0,0.7);
+            border: 1px solid rgba(255,255,255,0.12);
+            color: var(--txt);
+        }
+
+        .modal-box * {
+            color: var(--txt) !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="modal-box">', unsafe_allow_html=True)
+
+    c1, c2 = st.columns([10, 1])
+    with c1:
+        st.markdown("### 🔍 Detalle ampliado")
+    with c2:
+        if st.button("✖", key="close_modal"):
+            st.session_state["modal_open"] = False
+            st.session_state["modal_row"] = None
+            st.rerun()
+
+    render_detail_card(row, show_modal_button=False)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ----------------------------------------------------
+# Página principal
 # ----------------------------------------------------
 st.set_page_config(page_title="Plex Movies Cleaner", layout="wide")
 st.title("🎬 Plex Movies Cleaner — Dashboard")
 
+# Modal (si está activo)
+render_modal()
+
 if not os.path.exists(ALL_CSV):
-    st.error(f"No se encuentra {ALL_CSV}. Ejecuta primero analiza_plex.py.")
+    st.error("No se encuentra report_all.csv. Ejecuta analiza_plex.py primero.")
     st.stop()
 
 df_all = pd.read_csv(ALL_CSV)
 df_filtered = pd.read_csv(FILTERED_CSV) if os.path.exists(FILTERED_CSV) else None
 
-# Aseguramos tipos numéricos donde aplica
-for col in ["imdb_rating", "rt_score", "imdb_votes", "year", "plex_rating"]:
+# Tipos numéricos
+num_cols = ["imdb_rating", "rt_score", "imdb_votes", "year", "plex_rating", "file_size"]
+for c in num_cols:
+    if c in df_all.columns:
+        df_all[c] = pd.to_numeric(df_all[c], errors="coerce")
+
+for col in ["poster_url", "trailer_url"]:
     if col in df_all.columns:
-        df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
+        df_all[col] = df_all[col].astype(str)
 
-# 🔹 NUEVO: aseguramos que file_size es numérico, si existe
-if "file_size" in df_all.columns:
-    df_all["file_size"] = pd.to_numeric(df_all["file_size"], errors="coerce")
-
-if df_filtered is not None and "file_size" in df_filtered.columns:
-    df_filtered["file_size"] = pd.to_numeric(df_filtered["file_size"], errors="coerce")
-
-# Cargamos sugerencias de metadata (si existen)
-if os.path.exists(METADATA_SUGG_CSV):
-    df_meta = pd.read_csv(METADATA_SUGG_CSV)
-    # Normalizamos algunos tipos
-    for col in ["plex_imdb_rating", "plex_imdb_votes", "suggested_imdb_rating", "suggested_imdb_votes", "confidence"]:
-        if col in df_meta.columns:
-            df_meta[col] = pd.to_numeric(df_meta[col], errors="coerce")
-else:
-    df_meta = None
+df_all = clean_base_dataframe(df_all)
+if df_filtered is not None:
+    df_filtered = clean_base_dataframe(df_filtered)
 
 # ----------------------------------------------------
-# Resumen + gráficos rápidos
+# Resumen general
 # ----------------------------------------------------
 st.subheader("Resumen general")
 
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("Películas totales", len(df_all))
-with col2:
-    st.metric("KEEP", int((df_all["decision"] == "KEEP").sum()))
-with col3:
-    st.metric("DELETE + MAYBE", int(df_all["decision"].isin(["DELETE", "MAYBE"]).sum()))
-with col4:
-    if "imdb_rating" in df_all.columns:
-        st.metric("IMDb medio", round(df_all["imdb_rating"].mean(skipna=True), 2))
-
-st.markdown("---")
-
-# Mini-gráficos en el resumen
-col_a, col_b = st.columns(2)
-with col_a:
-    st.caption("Distribución por decisión")
-    if "decision" in df_all.columns:
-        counts_dec = df_all["decision"].value_counts().reset_index()
-        counts_dec.columns = ["decision", "count"]
-        chart_dec = (
-            alt.Chart(counts_dec)
-            .mark_bar()
-            .encode(
-                x=alt.X("decision:N", title="Decisión"),
-                y=alt.Y("count:Q", title="Nº de películas"),
-                tooltip=["decision", "count"],
-            )
-        )
-        st.altair_chart(chart_dec, use_container_width=True)
-
-with col_b:
-    st.caption("Histograma IMDb rating")
-    if "imdb_rating" in df_all.columns:
-        chart_hist = (
-            alt.Chart(df_all.dropna(subset=["imdb_rating"]))
-            .mark_bar()
-            .encode(
-                x=alt.X("imdb_rating:Q", bin=alt.Bin(maxbins=20), title="IMDb rating"),
-                y=alt.Y("count():Q", title="Nº de películas"),
-                tooltip=["count()"],
-            )
-        )
-        st.altair_chart(chart_hist, use_container_width=True)
+col1, col2, col3 = st.columns(3)
+col1.metric("Películas", len(df_all))
+col2.metric("KEEP", int((df_all["decision"] == "KEEP").sum()))
+col3.metric("DELETE/MAYBE", int(df_all["decision"].isin(["DELETE", "MAYBE"]).sum()))
 
 st.markdown("---")
 
@@ -155,14 +421,7 @@ st.markdown("---")
 # Pestañas
 # ----------------------------------------------------
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-    [
-        "📚 Todas",
-        "⚠️ Candidatas (DELETE/MAYBE)",
-        "🔎 Búsqueda avanzada",
-        "🧹 Borrado de archivos",
-        "📊 Gráficos",
-        "🧠 Sugerencias metadata",
-    ]
+    ["📚 Todas", "⚠️ Candidatas", "🔎 Búsqueda avanzada", "🧹 Borrado", "📊 Gráficos", "🧠 Metadata"]
 )
 
 # ----------------------------------------------------
@@ -170,339 +429,90 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
 # ----------------------------------------------------
 with tab1:
     st.write("### Todas las películas")
-
-    library_filter = st.multiselect("Filtrar por biblioteca", sorted(df_all["library"].unique()))
-    decision_filter = st.multiselect("Filtrar por decisión", sorted(df_all["decision"].unique()))
-
     df_view = df_all.copy()
-    if library_filter:
-        df_view = df_view[df_view["library"].isin(library_filter)]
-    if decision_filter:
-        df_view = df_view[df_view["decision"].isin(decision_filter)]
-
-    st.dataframe(df_view, use_container_width=True)
-
+    col_grid, col_detail = st.columns([2, 1])
+    with col_grid:
+        selected_row = aggrid_with_row_click(df_view, "all")
+    with col_detail:
+        render_detail_card(selected_row)
 
 # ----------------------------------------------------
 # Tab 2: Candidatas
 # ----------------------------------------------------
 with tab2:
-    st.write("### Películas candidatas a borrar / revisar")
-
+    st.write("### Películas candidatas")
     if df_filtered is None:
-        st.warning("No se encontró el CSV filtrado. Ejecuta primero analiza_plex.py.")
+        st.warning("No hay CSV filtrado")
     else:
         df_view = df_filtered.copy()
-
-        library_filter2 = st.multiselect("Filtrar por biblioteca", sorted(df_view["library"].unique()))
-        reason_filter = st.multiselect("Filtrar por reason", sorted(df_view["reason"].unique()))
-        misid_only = st.checkbox("Mostrar solo posibles mal identificadas (misidentified_hint no vacío)")
-
-        if library_filter2:
-            df_view = df_view[df_view["library"].isin(library_filter2)]
-        if reason_filter:
-            df_view = df_view[df_view["reason"].isin(reason_filter)]
-        if misid_only:
-            df_view = df_view[df_view["misidentified_hint"].notna() & (df_view["misidentified_hint"] != "")]
-
-        st.dataframe(df_view, use_container_width=True)
-
+        colg, cold = st.columns([2, 1])
+        with colg:
+            selected_row2 = aggrid_with_row_click(df_view, "filtered")
+        with cold:
+            render_detail_card(selected_row2)
 
 # ----------------------------------------------------
 # Tab 3: Búsqueda avanzada
 # ----------------------------------------------------
 with tab3:
     st.write("### Búsqueda avanzada")
-
-    title_query = st.text_input("Buscar por título (contiene):")
-    min_imdb = st.slider("IMDb rating mínimo", 0.0, 10.0, 0.0, 0.1)
-    max_imdb = st.slider("IMDb rating máximo", 0.0, 10.0, 10.0, 0.1)
-
+    title_query = st.text_input("Buscar título:")
     df_view = df_all.copy()
-
-    # Filtro por título
     if title_query:
         df_view = df_view[df_view["title"].str.contains(title_query, case=False, na=False)]
-
-    # Filtro por IMDb
-    if "imdb_rating" in df_view.columns:
-        df_view = df_view[
-            (df_view["imdb_rating"].fillna(0) >= min_imdb)
-            & (df_view["imdb_rating"].fillna(10) <= max_imdb)
-        ]
-
-    # 🔹 NUEVO: filtro por tamaño de fichero (file_size -> GB)
-    if "file_size" in df_view.columns:
-        # Crear columna auxiliar en GB solo para esta vista
-        df_view["file_size_gb"] = df_view["file_size"] / (1024**3)
-
-        valid_sizes = df_view["file_size_gb"].dropna()
-        valid_sizes = valid_sizes[valid_sizes > 0]
-
-        if not valid_sizes.empty:
-            min_size = float(valid_sizes.min())
-            max_size = float(valid_sizes.max())
-
-            st.markdown("#### Filtro por tamaño de archivo (GB)")
-            size_min, size_max = st.slider(
-                "Rango de tamaño (GB)",
-                min_value=0.0,
-                max_value=round(max_size + 0.1, 1),
-                value=(0.0, round(max_size + 0.1, 1)),
-                step=0.1,
-            )
-
-            df_view = df_view[
-                (df_view["file_size_gb"].fillna(0) >= size_min)
-                & (df_view["file_size_gb"].fillna(0) <= size_max)
-            ]
-
-            st.caption(
-                f"Tamaños reales en dataset: de ~{min_size:.2f} GB a ~{max_size:.2f} GB"
-            )
-        else:
-            st.info("No hay tamaños de fichero válidos (file_size) para aplicar filtro.")
-
-    st.dataframe(df_view, use_container_width=True)
-
+    colg3, cold3 = st.columns([2, 1])
+    with colg3:
+        selected_row3 = aggrid_with_row_click(df_view, "search")
+    with cold3:
+        render_detail_card(selected_row3)
 
 # ----------------------------------------------------
-# Tab 4: Borrado de archivos
+# Tab 4: Borrado
 # ----------------------------------------------------
 with tab4:
-    st.write("### 🧹 Borrado de archivos marcados como DELETE")
-    st.info(
-        "Este módulo trabaja sobre el CSV filtrado "
-        f"**{FILTERED_CSV}** y solo afecta a filas con `decision = DELETE`.\n\n"
-        f"**DELETE_DRY_RUN = {DELETE_DRY_RUN}** | **DELETE_REQUIRE_CONFIRM = {DELETE_REQUIRE_CONFIRM}**"
-    )
-
+    st.write("### Borrado de archivos marcados como DELETE")
     if df_filtered is None:
-        st.warning("No se encontró el CSV filtrado. Ejecuta primero analiza_plex.py.")
+        st.warning("No hay CSV filtrado")
     else:
-        df_del = df_filtered[df_filtered["decision"] == "DELETE"].copy()
-        st.write(f"Películas marcadas como DELETE en el CSV: **{len(df_del)}**")
-
-        if df_del.empty:
-            st.stop()
-
-        # Filtros
-        library_del_filter = st.multiselect(
-            "Filtrar por biblioteca (para borrado)",
-            sorted(df_del["library"].unique()),
-            placeholder="(opcional)"
-        )
-        if library_del_filter:
-            df_del = df_del[df_del["library"].isin(library_del_filter)]
-
-        st.write(f"Seleccionadas tras filtros: **{len(df_del)}**")
-
-        st.dataframe(
-            df_del[["library", "title", "year", "imdb_rating", "rt_score", "imdb_votes", "reason", "file"]],
-            use_container_width=True,
-        )
-
-        st.markdown("---")
-
-        if DELETE_DRY_RUN:
-            st.warning("**DELETE_DRY_RUN=true** → NO se borrará ningún archivo. Se mostrará solo un log simulado.")
-
-        # Confirmación fuerte
+        df_del = df_filtered[df_filtered["decision"] == "DELETE"]
+        st.dataframe(df_del, use_container_width=True)
         if DELETE_REQUIRE_CONFIRM:
-            confirm_text = st.text_input(
-                "Escribe EXACTAMENTE 'BORRAR' para habilitar el botón de borrado:",
-                type="default",
-            )
-            confirmed = confirm_text.strip().upper() == "BORRAR"
+            confirm = st.text_input("Escribe BORRAR:")
+            ok = confirm.strip().upper() == "BORRAR"
         else:
-            confirmed = True
-
-        delete_button = st.button("🚨 Ejecutar borrado de archivos (según configuración)")
-
-        if delete_button:
-            if not confirmed:
-                st.error("No has escrito 'BORRAR'. Operación cancelada.")
-            elif df_del.empty:
-                st.warning("No hay filas DELETE después de aplicar filtros.")
+            ok = True
+        if st.button("Borrar archivos"):
+            if not ok:
+                st.error("Debes escribir BORRAR")
             else:
-                with st.spinner("Procesando borrado..."):
-                    num_ok, num_error, logs = delete_files_from_rows(df_del)
-
-                st.success(f"Borrado completado. OK: {num_ok}, Errores: {num_error}")
-                st.text_area("Log de operación", value="\n".join(logs), height=300)
-
+                with st.spinner("Procesando..."):
+                    num_ok, num_err, logs = delete_files_from_rows(df_del)
+                st.success(f"Borrado completado. OK={num_ok}, Errores={num_err}")
+                st.text_area("Log", "\n".join(logs))
 
 # ----------------------------------------------------
-# Tab 5: Gráficos detallados
+# Tab 5: Gráficos (ejemplo sencillo)
 # ----------------------------------------------------
 with tab5:
-    st.write("### 📊 Visualización de datos")
-
-    if df_all.empty:
-        st.warning("No hay datos para mostrar.")
-    else:
-        # Selector de biblioteca (opcional)
-        libs = ["(Todas)"] + sorted(df_all["library"].dropna().unique())
-        sel_lib = st.selectbox("Filtrar por biblioteca (para gráficos)", libs)
-        df_g = df_all.copy()
-        if sel_lib != "(Todas)":
-            df_g = df_g[df_g["library"] == sel_lib]
-
-        # Row 1: IMDb vs votos
-        colg1, colg2 = st.columns(2)
-
-        with colg1:
-            st.caption("IMDb rating vs número de votos (color por decisión)")
-            if "imdb_rating" in df_g.columns and "imdb_votes" in df_g.columns:
-                chart_scatter = (
-                    alt.Chart(df_g.dropna(subset=["imdb_rating", "imdb_votes"]))
-                    .mark_circle(size=60, opacity=0.7)
-                    .encode(
-                        x=alt.X("imdb_rating:Q", title="IMDb rating"),
-                        y=alt.Y("imdb_votes:Q", title="IMDb votos", scale=alt.Scale(type="log", nice=True)),
-                        color=alt.Color("decision:N", title="Decisión"),
-                        tooltip=["title", "year", "imdb_rating", "imdb_votes", "decision"],
-                    )
-                    .interactive()
-                )
-                st.altair_chart(chart_scatter, use_container_width=True)
-
-        with colg2:
-            st.caption("Recuento de películas por biblioteca y decisión")
-            if "library" in df_g.columns and "decision" in df_g.columns:
-                counts_lib_dec = (
-                    df_g.groupby(["library", "decision"])["title"]
-                    .count()
-                    .reset_index()
-                    .rename(columns={"title": "count"})
-                )
-                chart_lib_dec = (
-                    alt.Chart(counts_lib_dec)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("library:N", title="Biblioteca"),
-                        y=alt.Y("count:Q", title="Nº de películas"),
-                        color=alt.Color("decision:N", title="Decisión"),
-                        tooltip=["library", "decision", "count"],
-                    )
-                )
-                st.altair_chart(chart_lib_dec, use_container_width=True)
-
-        st.markdown("---")
-
-        # Row 2: evolución por año
-        st.caption("Distribución por año y decisión (stacked)")
-        if "year" in df_g.columns and "decision" in df_g.columns:
-            df_year = df_g.dropna(subset=["year"])
-            df_year["year"] = df_year["year"].astype(int)
-            counts_year_dec = (
-                df_year.groupby(["year", "decision"])["title"]
-                .count()
-                .reset_index()
-                .rename(columns={"title": "count"})
+    st.write("### Gráficos")
+    if "imdb_rating" in df_all.columns:
+        chart = (
+            alt.Chart(df_all.dropna(subset=["imdb_rating"]))
+            .mark_bar()
+            .encode(
+                x=alt.X("imdb_rating:Q", bin=alt.Bin(maxbins=20), title="IMDb"),
+                y=alt.Y("count():Q", title="Nº pelis"),
             )
-            chart_year = (
-                alt.Chart(counts_year_dec)
-                .mark_bar()
-                .encode(
-                    x=alt.X("year:O", title="Año"),
-                    y=alt.Y("count:Q", stack="normalize", title="% de películas"),
-                    color=alt.Color("decision:N", title="Decisión"),
-                    tooltip=["year", "decision", "count"],
-                )
-            )
-            st.altair_chart(chart_year, use_container_width=True)
-
+        )
+        st.altair_chart(chart, use_container_width=True)
 
 # ----------------------------------------------------
-# Tab 6: Sugerencias de metadata
+# Tab 6: Metadata
 # ----------------------------------------------------
 with tab6:
-    st.write("### 🧠 Sugerencias automáticas de metadata (OMDb)")
-
-    if df_meta is None or df_meta.empty:
-        st.info(
-            "No se ha encontrado ningún fichero de sugerencias "
-            f"(**{METADATA_SUGG_CSV}**).\n\n"
-            "Ejecuta primero `analiza_plex.py` con el sistema de corrección de metadata activado."
-        )
+    st.write("### Sugerencias de metadata")
+    if os.path.exists(METADATA_SUGG_CSV):
+        df_meta = pd.read_csv(METADATA_SUGG_CSV)
+        st.dataframe(df_meta, use_container_width=True)
     else:
-        st.markdown(
-            "- Cada fila representa una película cuya metadata parece sospechosa.\n"
-            "- Se muestran los datos actuales de Plex y la sugerencia de OMDb.\n"
-            "- La columna **action** indica: `AUTO_APPLY`, `MAYBE` o `REVIEW`."
-        )
-
-        # Creamos una columna de label de confianza (baja / media / alta)
-        def confidence_label(c):
-            try:
-                c = float(c)
-            except Exception:
-                return "Desconocida"
-            if c >= 70:
-                return "Alta"
-            if c >= 40:
-                return "Media"
-            return "Baja"
-
-        df_meta["confidence_level"] = df_meta["confidence"].apply(confidence_label)
-
-        # Filtros
-        col_m1, col_m2, col_m3 = st.columns(3)
-        with col_m1:
-            libs_meta = sorted(df_meta["library"].dropna().unique())
-            lib_filter = st.multiselect("Filtrar por biblioteca", libs_meta)
-
-        with col_m2:
-            actions = sorted(df_meta["action"].dropna().unique())
-            action_filter = st.multiselect("Filtrar por acción", actions, default=actions)
-
-        with col_m3:
-            min_conf, max_conf = st.slider(
-                "Rango de confianza",
-                0, 100, (0, 100),
-                help="Basado en el score heurístico de matching OMDb"
-            )
-
-        df_view = df_meta.copy()
-
-        if lib_filter:
-            df_view = df_view[df_view["library"].isin(lib_filter)]
-        if action_filter:
-            df_view = df_view[df_view["action"].isin(action_filter)]
-
-        df_view = df_view[
-            (df_view["confidence"].fillna(0) >= min_conf)
-            & (df_view["confidence"].fillna(0) <= max_conf)
-        ]
-
-        st.write(f"Sugerencias tras filtros: **{len(df_view)}**")
-
-        if not df_view.empty:
-            cols_show = [
-                "library",
-                "plex_title",
-                "plex_year",
-                "plex_imdb_id",
-                "plex_imdb_rating",
-                "plex_imdb_votes",
-                "suspicious_reason",
-                "suggested_imdb_id",
-                "suggested_title",
-                "suggested_year",
-                "suggested_imdb_rating",
-                "suggested_imdb_votes",
-                "confidence",
-                "confidence_level",
-                "action",
-            ]
-            cols_show = [c for c in cols_show if c in df_view.columns]
-
-            st.dataframe(df_view[cols_show], use_container_width=True)
-
-        st.markdown(
-            "> 💡 Para aplicar cambios automáticamente en Plex, ajusta "
-            "`METADATA_DRY_RUN=false` y `METADATA_APPLY_CHANGES=true` en el `.env` "
-            "y vuelve a ejecutar `analiza_plex.py`. (La parte de GUID puede requerir "
-            "un pequeño ajuste según tu versión de Plex/plexapi)."
-        )
+        st.info(f"No se ha encontrado {METADATA_SUGG_CSV}")
