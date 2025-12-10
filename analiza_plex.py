@@ -8,7 +8,6 @@ from typing import Optional, Dict, Any, List, Tuple
 
 from dotenv import load_dotenv
 from plexapi.server import PlexServer
-from html import escape
 
 # ============================================================
 #              CARGA DE CONFIGURACIÓN DESDE .env
@@ -25,7 +24,7 @@ OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "report")
 raw_exclude = os.getenv("EXCLUDE_LIBRARIES", "")
 EXCLUDE_LIBRARIES = [x.strip() for x in raw_exclude.split(",") if x.strip()]
 
-# Umbrales de decisión para KEEP/DELETE (como ya tenías)
+# Umbrales de decisión para KEEP/DELETE
 IMDB_KEEP_MIN_RATING = float(os.getenv("IMDB_KEEP_MIN_RATING", "7.0"))
 IMDB_KEEP_MIN_RATING_WITH_RT = float(os.getenv("IMDB_KEEP_MIN_RATING_WITH_RT", "6.5"))
 RT_KEEP_MIN_SCORE = int(os.getenv("RT_KEEP_MIN_SCORE", "75"))
@@ -80,6 +79,9 @@ def save_cache(cache: Dict[str, Any]) -> None:
 
 omdb_cache = load_cache()
 
+# Flag global para desactivar OMDb cuando salte el rate limit
+OMDB_DISABLED = False
+
 # ============================================================
 #                      PLEX CONNECTION
 # ============================================================
@@ -114,14 +116,24 @@ def query_omdb(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     Envoltura genérica para OMDb:
     - Usa cache
     - Respeta rate limit
+    - Si se alcanza el límite y persiste, desactiva OMDb para el resto
+      de la ejecución (OMDB_DISABLED=True) y devuelve None para nuevas peticiones
+      (pero se sigue usando la caché existente).
     """
+    global OMDB_DISABLED
+
     if not OMDB_API_KEY:
         raise RuntimeError("No hay OMDB_API_KEY en .env")
 
     key = json.dumps(params, sort_keys=True, ensure_ascii=False)
 
+    # 1) Siempre mirar la caché aunque OMDB esté desactivado
     if key in omdb_cache:
         return omdb_cache[key]
+
+    # 2) Si OMDB está desactivado, no hacemos llamadas nuevas
+    if OMDB_DISABLED:
+        return None
 
     attempts = 0
     base_params = dict(params)
@@ -136,6 +148,7 @@ def query_omdb(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             print(f"Error consultando OMDb con params={params}: {e}")
             return None
 
+        # Rate limit de OMDb
         if data.get("Error") == "Request limit reached!":
             if attempts < OMDB_RATE_LIMIT_MAX_RETRIES:
                 attempts += 1
@@ -148,9 +161,13 @@ def query_omdb(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 continue
             else:
                 print("\n🚨 OMDb sigue devolviendo 'Request limit reached!' tras reintentos.")
-                print("⛔ Deteniendo el script para evitar un bloqueo diario más largo.\n")
-                raise SystemExit("Script stopped due to OMDb rate limit.")
+                print("⚠️ OMDb se desactiva para el resto de esta ejecución.")
+                print("   Se continuará el análisis SIN datos nuevos de OMDb,")
+                print("   pero se seguirá utilizando la caché local existente.\n")
+                OMDB_DISABLED = True
+                return None
 
+        # Guardamos en caché y devolvemos
         omdb_cache[key] = data
         save_cache(omdb_cache)
         return data
@@ -731,12 +748,42 @@ def analyze_single_library(section, suggestions: List[Dict[str, Any]], logs: Lis
 
         misid_flag = detect_misidentified(movie, imdb_rating, imdb_votes, rt_score)
 
+        # -----------------------------
+        #  TAMAÑO Y RUTA DEL FICHERO (desde Plex)
+        # -----------------------------
         file_path = None
+        file_size = None
+
         try:
-            if movie.media and movie.media[0].parts:
-                file_path = movie.media[0].parts[0].file
-        except Exception:
-            pass
+            if movie.media:
+                media = movie.media[0]
+                if media.parts:
+                    total_size = 0
+                    for part in media.parts:
+                        print(
+                            f"   -> part file={getattr(part, 'file', None)} "
+                            f"size={getattr(part, 'size', None)} "
+                            f"type={type(part)}"
+                        )
+
+                        if hasattr(part, "size") and part.size is not None:
+                            total_size += int(part.size)
+
+                        if file_path is None:
+                            file_path = getattr(part, "file", None)
+
+                    if total_size > 0:
+                        file_size = total_size
+                    else:
+                        print(f"   !! WARNING: movie '{movie.title}' sin size en parts")
+                else:
+                    print(f"   !! WARNING: movie '{movie.title}' sin parts en media[0]")
+            else:
+                print(f"   !! WARNING: movie '{movie.title}' sin media")
+        except Exception as e:
+            print(f"   !! ERROR obteniendo tamaño para '{movie.title}': {e}")
+
+        print(f"   -> RESULT file_path={file_path}, file_size={file_size}")
 
         rows.append({
             "library": section.title,
@@ -748,6 +795,9 @@ def analyze_single_library(section, suggestions: List[Dict[str, Any]], logs: Lis
             "rt_score": rt_score,
             "plex_rating": movie.rating,
             "file": file_path,
+            "file_size": file_size,            # bytes desde Plex (suma de todas las parts)
+            "ratingKey": movie.ratingKey,
+            "thumb": movie.thumb,
             "decision": decision,
             "reason": reason,
             "misidentified_hint": misid_flag,
