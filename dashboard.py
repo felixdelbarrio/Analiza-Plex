@@ -292,10 +292,8 @@ def aggrid_with_row_click(df: pd.DataFrame, key_suffix: str):
     if len(selected_raw) == 0:
         return None
 
-    partial = selected_raw[0]
-    final_row = {col: partial.get(col, None) for col in df.columns}
-
-    return final_row
+    row = selected_raw[0]
+    return row
 
 
 def render_detail_card(row: dict, show_modal_button=True):
@@ -313,59 +311,43 @@ def render_detail_card(row: dict, show_modal_button=True):
         omdb_dict = safe_json_loads_single(row.get("omdb_json"))
 
     def from_omdb(key):
-        if isinstance(omdb_dict, dict):
-            val = omdb_dict.get(key)
-            if val is not None and str(val).strip() not in ("", "nan", "None"):
-                return val
+        if omdb_dict and isinstance(omdb_dict, dict):
+            return omdb_dict.get(key)
         return None
 
-    def safe(*keys):
-        for k in keys:
-            if k is None:
-                continue
-            v = row.get(k, None)
-            if v is not None and str(v).strip() not in ("", "nan", "None"):
-                return v
-        return None
+    # Campos básicos
+    title = row.get("title", "¿Sin título?")
+    year = row.get("year")
+    library = row.get("library")
+    decision = row.get("decision")
+    reason = row.get("reason")
+    imdb_rating = row.get("imdb_rating")
+    imdb_votes = row.get("imdb_votes")
+    rt_score = row.get("rt_score")
+    plex_rating = row.get("plex_rating")
+    poster_url = row.get("poster_url")
+    file_path = row.get("file")
+    file_size = row.get("file_size")
+    trailer_url = row.get("trailer_url")
+    rating_key = row.get("rating_key")
+    imdb_id = row.get("imdb_id")
 
-    title = safe("title") or "(sin título)"
-    year = safe("year")
-    library = safe("library")
-    decision = safe("decision")
-    reason = safe("reason")
-    imdb_rating = safe("imdb_rating")
-    rt_score = safe("rt_score")
-    imdb_votes = safe("imdb_votes")
-    imdb_id = safe("imdb_id")
-    poster_url = safe("poster_url")
-    file_path = safe("file")
-    file_size = safe("file_size")
-    rating_key = safe("ratingKey")
-    trailer_url = safe("trailer_url")
+    rated = row.get("Rated") or from_omdb("Rated")
+    released = row.get("Released") or from_omdb("Released")
+    runtime = row.get("Runtime") or from_omdb("Runtime")
+    genre = row.get("Genre") or from_omdb("Genre")
+    director = row.get("Director") or from_omdb("Director")
+    writer = row.get("Writer") or from_omdb("Writer")
+    actors = row.get("Actors") or from_omdb("Actors")
+    language = row.get("Language") or from_omdb("Language")
+    country = row.get("Country") or from_omdb("Country")
+    awards = row.get("Awards") or from_omdb("Awards")
+    plot = row.get("Plot") or from_omdb("Plot")
 
-    # Campos OMDb extra: preferimos lo del JSON si está
-    rated = from_omdb("Rated") or safe("Rated", "rated")
-    released = from_omdb("Released") or safe("Released", "released")
-    runtime = from_omdb("Runtime") or safe("Runtime", "runtime")
-    genre = from_omdb("Genre") or safe("Genre", "genre")
-    director = from_omdb("Director") or safe("Director", "director")
-    writer = from_omdb("Writer") or safe("Writer", "writer")
-    actors = from_omdb("Actors") or safe("Actors", "actors")
-    language = from_omdb("Language") or safe("Language", "language")
-    country = from_omdb("Country") or safe("Country", "country")
-    awards = from_omdb("Awards") or safe("Awards", "awards")
-
-    plot = (
-        from_omdb("Plot")
-        or safe("plot", "Plot")
-        or safe("summary")
-        or safe("overview")
-        or safe("description")
-    )
-
+    # Layout principal del panel
     col_left, col_right = st.columns([1, 2])
 
-    # ------------- POSTER PANEL -------------
+    # ------------- POSTER -------------
     with col_left:
         if poster_url and str(poster_url).strip() and str(poster_url).lower() not in ("nan", "none"):
             st.image(poster_url, width=280)
@@ -484,10 +466,25 @@ def render_detail_card(row: dict, show_modal_button=True):
 def render_modal():
     """
     Ventana modal superpuesta — usa sesión como estado.
-    Sin overlay oscurecedor para mantener brillo/color homogéneo.
+    Ocultamos también el header / barra superior de Streamlit.
     """
     if not st.session_state["modal_open"]:
         return
+
+    # --- Ocultar header / toolbar de Streamlit mientras la modal está activa ---
+    st.markdown(
+        """
+        <style>
+        header[data-testid="stHeader"] {
+            display: none !important;
+        }
+        div[data-testid="stToolbar"] {
+            display: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     row = st.session_state["modal_row"]
     if row is None:
@@ -547,10 +544,17 @@ def render_modal():
 # Página principal
 # ----------------------------------------------------
 st.set_page_config(page_title="Plex Movies Cleaner", layout="wide")
-st.title("🎬 Plex Movies Cleaner — Dashboard")
+
+# Título principal solo cuando NO hay modal abierto
+if not st.session_state.get("modal_open"):
+    st.title("🎬 Plex Movies Cleaner — Dashboard")
 
 # Modal (si está activo)
 render_modal()
+
+# Si el modal está abierto, no renderizamos el resto del dashboard
+if st.session_state.get("modal_open"):
+    st.stop()
 
 if not os.path.exists(ALL_CSV):
     st.error("No se encuentra report_all.csv. Ejecuta analiza_plex.py primero.")
@@ -606,220 +610,322 @@ with tab1:
 # Tab 2: Candidatas
 # ----------------------------------------------------
 with tab2:
-    st.write("### Películas candidatas")
-    if df_filtered is None:
-        st.warning("No hay CSV filtrado")
+    st.write("### Candidatas a borrar (DELETE / MAYBE)")
+    if df_filtered is None or df_filtered.empty:
+        st.info("No hay CSV filtrado o está vacío.")
     else:
         df_view = df_filtered.copy()
-        colg, cold = st.columns([2, 1])
-        with colg:
-            selected_row2 = aggrid_with_row_click(df_view, "filtered")
-        with cold:
-            render_detail_card(selected_row2)
+        col_grid, col_detail = st.columns([2, 1])
+        with col_grid:
+            selected_row = aggrid_with_row_click(df_view, "filtered")
+        with col_detail:
+            render_detail_card(selected_row)
 
 # ----------------------------------------------------
 # Tab 3: Búsqueda avanzada
 # ----------------------------------------------------
 with tab3:
     st.write("### Búsqueda avanzada")
-    title_query = st.text_input("Buscar título:")
+
     df_view = df_all.copy()
-    if title_query:
-        df_view = df_view[df_view["title"].str.contains(title_query, case=False, na=False)]
-    colg3, cold3 = st.columns([2, 1])
-    with colg3:
-        selected_row3 = aggrid_with_row_click(df_view, "search")
-    with cold3:
-        render_detail_card(selected_row3)
+
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+
+    with col_f1:
+        lib_filter = st.multiselect(
+            "Biblioteca", sorted(df_view["library"].dropna().unique().tolist())
+        )
+
+    with col_f2:
+        dec_filter = st.multiselect(
+            "Decisión",
+            ["DELETE", "MAYBE", "KEEP", "UNKNOWN"],
+            default=["DELETE", "MAYBE", "KEEP", "UNKNOWN"],
+        )
+
+    with col_f3:
+        min_imdb = st.slider("IMDb mínimo", 0.0, 10.0, 0.0, 0.1)
+
+    with col_f4:
+        min_votes = st.slider("IMDb votos mínimos", 0, 200000, 0, 1000)
+
+    if lib_filter:
+        df_view = df_view[df_view["library"].isin(lib_filter)]
+
+    if dec_filter:
+        df_view = df_view[df_view["decision"].isin(dec_filter)]
+
+    df_view = df_view[
+        (df_view["imdb_rating"].fillna(0) >= min_imdb)
+        & (df_view["imdb_votes"].fillna(0) >= min_votes)
+    ]
+
+    st.write(f"Resultados: {len(df_view)} película(s)")
+
+    col_grid, col_detail = st.columns([2, 1])
+    with col_grid:
+        selected_row = aggrid_with_row_click(df_view, "advanced")
+    with col_detail:
+        render_detail_card(selected_row)
 
 # ----------------------------------------------------
 # Tab 4: Borrado
 # ----------------------------------------------------
 with tab4:
-    st.write("### Borrado de archivos marcados como DELETE")
-    if df_filtered is None:
-        st.warning("No hay CSV filtrado")
-    else:
-        df_del = df_filtered[df_filtered["decision"] == "DELETE"]
-        st.dataframe(df_del, use_container_width=True)
-        if DELETE_REQUIRE_CONFIRM:
-            confirm = st.text_input("Escribe BORRAR:")
-            ok = confirm.strip().upper() == "BORRAR"
-        else:
-            ok = True
-        if st.button("Borrar archivos"):
-            if not ok:
-                st.error("Debes escribir BORRAR")
-            else:
-                with st.spinner("Procesando..."):
-                    num_ok, num_err, logs = delete_files_from_rows(df_del)
-                st.success(f"Borrado completado. OK={num_ok}, Errores={num_err}")
-                st.text_area("Log", "\n".join(logs))
+    st.write("### Borrado controlado de archivos")
 
-# ----------------------------------------------------
-# Tab 5: Gráficos AVANZADOS con selector
-# ----------------------------------------------------
-with tab5:
-    st.write("### 📊 Gráficos")
-
-    if df_all.empty:
-        st.warning("No hay datos para mostrar.")
+    if df_filtered is None or df_filtered.empty:
+        st.info("No hay CSV filtrado. Ejecuta primero el análisis.")
     else:
-        view = st.selectbox(
-            "Selecciona vista de análisis",
-            [
-                "Resumen calidad por biblioteca",
-                "Distribución por géneros",
-                "Distribución por décadas",
-                "IMDb vs nº votos",
-                "IMDb vs tamaño de archivo",
-                "Espacio ocupado por biblioteca",
-                "Boxplot IMDb por biblioteca",
-                "Ranking de directores",
-                "Palabras frecuentes en títulos (KEEP vs DELETE)",
-                "Simulador de limpieza por umbrales",
-            ],
+        st.warning(
+            "⚠️ Cuidado: aquí puedes borrar archivos físicamente.\n\n"
+            f"- DELETE_DRY_RUN = `{DELETE_DRY_RUN}`\n"
+            f"- DELETE_REQUIRE_CONFIRM = `{DELETE_REQUIRE_CONFIRM}`"
         )
 
-        # Filtro opcional por biblioteca
-        libs = ["(Todas)"] + sorted(df_all["library"].dropna().unique())
-        sel_lib = st.selectbox("Filtrar por biblioteca (opcional)", libs)
-        df_g = df_all.copy()
-        if sel_lib != "(Todas)":
-            df_g = df_g[df_g["library"] == sel_lib]
+        df_view = df_filtered.copy()
 
-        # 1) Resumen calidad por biblioteca
-        if view == "Resumen calidad por biblioteca":
-            if "library" in df_g.columns and "imdb_rating" in df_g.columns:
-                agg = (
-                    df_g.groupby("library")
-                    .agg(
-                        imdb_mean=("imdb_rating", "mean"),
-                        count=("title", "count"),
-                    )
-                    .reset_index()
+        st.write("Filtra las películas que quieras borrar y selecciónalas en la tabla:")
+
+        col_f1, col_f2 = st.columns(2)
+
+        with col_f1:
+            lib_filter = st.multiselect(
+                "Biblioteca", sorted(df_view["library"].dropna().unique().tolist())
+            )
+        with col_f2:
+            dec_filter = st.multiselect(
+                "Decisión", ["DELETE", "MAYBE"], default=["DELETE", "MAYBE"]
+            )
+
+        if lib_filter:
+            df_view = df_view[df_view["library"].isin(lib_filter)]
+        if dec_filter:
+            df_view = df_view[df_view["decision"].isin(dec_filter)]
+
+        gb = GridOptionsBuilder.from_dataframe(df_view)
+        gb.configure_selection(selection_mode="multiple", use_checkbox=True)
+        gb.configure_grid_options(domLayout="normal")
+        grid_options = gb.build()
+
+        grid_response = AgGrid(
+            df_view,
+            gridOptions=grid_options,
+            update_mode=GridUpdateMode.SELECTION_CHANGED,
+            enable_enterprise_modules=False,
+            fit_columns_on_grid_load=True,
+            height=500,
+            key="aggrid_delete",
+        )
+
+        selected_rows = grid_response.get("selected_rows", None)
+        if isinstance(selected_rows, pd.DataFrame):
+            selected_rows = selected_rows.to_dict(orient="records")
+
+        num_selected = len(selected_rows) if selected_rows else 0
+        st.write(f"Películas seleccionadas: {num_selected}")
+
+        if num_selected > 0:
+            if DELETE_REQUIRE_CONFIRM:
+                confirm = st.checkbox(
+                    "Confirmo que quiero borrar físicamente los archivos seleccionados."
                 )
+            else:
+                confirm = True
 
-                base = alt.Chart(agg)
+            if st.button("🗑️ Ejecutar borrado"):
+                if not confirm:
+                    st.warning("Marca la casilla de confirmación antes de borrar.")
+                else:
+                    df_sel = pd.DataFrame(selected_rows)
+                    ok, err, logs = delete_files_from_rows(df_sel)
 
-                c1 = base.mark_bar().encode(
+                    st.success(f"Borrado completado. OK={ok}, errores={err}")
+                    st.text_area("Log de borrado", value="\n".join(logs), height=200)
+
+# ----------------------------------------------------
+# Tab 5: Gráficos
+# ----------------------------------------------------
+with tab5:
+    st.write("### Gráficos")
+
+    view = st.selectbox(
+        "Vista",
+        [
+            "Distribución por decisión",
+            "Rating IMDb por decisión",
+            "Ratings IMDb vs RT",
+            "Distribución por década",
+            "Distribución por biblioteca",
+            "Distribución por género (OMDb)",
+            "Espacio ocupado por biblioteca/decisión",
+            "Boxplot IMDb por biblioteca",
+            "Ranking de directores",
+            "Palabras más frecuentes en títulos DELETE/MAYBE",
+        ],
+    )
+
+    df_g = df_all.copy()
+
+    # 1) Distribución por decisión
+    if view == "Distribución por decisión":
+        if "decision" not in df_g.columns:
+            st.info("No hay columna 'decision'.")
+        else:
+            agg = df_g.groupby("decision")["title"].count().reset_index()
+            agg = agg.rename(columns={"title": "count"})
+
+            chart = (
+                alt.Chart(agg)
+                .mark_bar()
+                .encode(
+                    x=alt.X("decision:N", title="Decisión"),
+                    y=alt.Y("count:Q", title="Número de películas"),
+                    color=decision_color("decision"),
+                    tooltip=["decision", "count"],
+                )
+            )
+            st.altair_chart(chart, use_container_width=True)
+
+    # 2) Rating IMDb por decisión
+    elif view == "Rating IMDb por decisión":
+        if "imdb_rating" not in df_g.columns or "decision" not in df_g.columns:
+            st.info("Faltan columnas imdb_rating o decision.")
+        else:
+            chart = (
+                alt.Chart(df_g.dropna(subset=["imdb_rating"]))
+                .mark_boxplot()
+                .encode(
+                    x=alt.X("decision:N", title="Decisión"),
+                    y=alt.Y("imdb_rating:Q", title="IMDb rating"),
+                    color=decision_color("decision"),
+                    tooltip=["decision"],
+                )
+            )
+            st.altair_chart(chart, use_container_width=True)
+
+    # 3) Ratings IMDb vs RT
+    elif view == "Ratings IMDb vs RT":
+        if "imdb_rating" not in df_g.columns or "rt_score" not in df_g.columns:
+            st.info("Faltan columnas imdb_rating o rt_score.")
+        else:
+            chart = (
+                alt.Chart(df_g.dropna(subset=["imdb_rating", "rt_score"]))
+                .mark_circle(size=60, opacity=0.7)
+                .encode(
+                    x=alt.X("imdb_rating:Q", title="IMDb rating"),
+                    y=alt.Y("rt_score:Q", title="RT score (%)"),
+                    color=decision_color("decision"),
+                    tooltip=[
+                        "title",
+                        "year",
+                        "library",
+                        "imdb_rating",
+                        "rt_score",
+                        "imdb_votes",
+                        "decision",
+                    ],
+                )
+            )
+            st.altair_chart(chart, use_container_width=True)
+
+    # 4) Distribución por década
+    elif view == "Distribución por década":
+        if "decade_label" not in df_g.columns:
+            st.info("Falta columna decade_label.")
+        else:
+            agg = (
+                df_g.dropna(subset=["decade_label"])
+                .groupby(["decade_label", "decision"])
+                ["title"]
+                .count()
+                .reset_index()
+            )
+            agg = agg.rename(columns={"title": "count"})
+
+            chart = (
+                alt.Chart(agg)
+                .mark_bar()
+                .encode(
+                    x=alt.X("decade_label:N", title="Década"),
+                    y=alt.Y("count:Q", title="Número de películas"),
+                    color=decision_color("decision"),
+                    tooltip=["decade_label", "decision", "count"],
+                )
+            )
+            st.altair_chart(chart, use_container_width=True)
+
+    # 5) Distribución por biblioteca
+    elif view == "Distribución por biblioteca":
+        if "library" not in df_g.columns:
+            st.info("Falta columna library.")
+        else:
+            agg = (
+                df_g.groupby(["library", "decision"])["title"]
+                .count()
+                .reset_index()
+                .rename(columns={"title": "count"})
+            )
+
+            chart = (
+                alt.Chart(agg)
+                .mark_bar()
+                .encode(
                     x=alt.X("library:N", title="Biblioteca"),
-                    y=alt.Y("imdb_mean:Q", title="IMDb medio"),
-                    tooltip=["library", alt.Tooltip("imdb_mean:Q", format=".2f")],
+                    y=alt.Y("count:Q", title="Número de películas", stack="normalize"),
+                    color=decision_color("decision"),
+                    tooltip=["library", "decision", "count"],
                 )
+            )
+            st.altair_chart(chart, use_container_width=True)
 
-                c2 = base.mark_line(point=True).encode(
-                    x="library:N",
-                    y=alt.Y("count:Q", title="Nº de películas"),
-                    tooltip=["library", "count"],
+    # 6) Distribución por género (OMDb)
+    elif view == "Distribución por género (OMDb)":
+        df_gen = explode_genres_from_omdb_json(df_g)
+
+        if df_gen.empty:
+            st.info("No hay datos de género en omdb_json.")
+        else:
+            agg = (
+                df_gen.groupby(["genre", "decision"])["title"]
+                .count()
+                .reset_index()
+                .rename(columns={"title": "count"})
+            )
+
+            top_n = st.slider("Top N géneros", 5, 50, 20)
+            top_genres = (
+                agg.groupby("genre")["count"].sum().sort_values(ascending=False).head(top_n).index
+            )
+            agg = agg[agg["genre"].isin(top_genres)]
+
+            chart = (
+                alt.Chart(agg)
+                .mark_bar()
+                .encode(
+                    x=alt.X("genre:N", title="Género"),
+                    y=alt.Y("count:Q", title="Número de películas", stack="normalize"),
+                    color=decision_color("decision"),
+                    tooltip=["genre", "decision", "count"],
                 )
+            )
 
-                st.altair_chart((c1 + c2).resolve_scale(y="independent"), use_container_width=True)
+            st.altair_chart(chart, use_container_width=True)
+
+    # 7) Espacio ocupado por biblioteca/decisión
+    elif view == "Espacio ocupado por biblioteca/decisión":
+        if "file_size_gb" not in df_g.columns or "library" not in df_g.columns:
+            st.info("Faltan columnas file_size_gb o library.")
+        else:
+            agg = (
+                df_g.groupby(["library", "decision"])["file_size_gb"]
+                .sum()
+                .reset_index()
+            )
+
+            if agg.empty:
+                st.info("No hay datos de tamaño de archivos.")
             else:
-                st.info("Faltan columnas 'library' o 'imdb_rating'.")
-
-        # 2) Géneros
-        elif view == "Distribución por géneros":
-            df_genres = explode_genres_from_omdb_json(df_g)
-            if df_genres.empty:
-                st.info("No se encontraron géneros (omdb_json / Genre).")
-            else:
-                decs = sorted(df_genres["decision"].dropna().unique())
-                dec_sel = st.multiselect("Filtrar decisiones", decs, default=decs)
-                if dec_sel:
-                    df_genres = df_genres[df_genres["decision"].isin(dec_sel)]
-
-                counts_gen = (
-                    df_genres.groupby(["genre", "decision"])["title"]
-                    .count()
-                    .reset_index()
-                    .rename(columns={"title": "count"})
-                )
-
-                chart_gen = (
-                    alt.Chart(counts_gen)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("count:Q", title="Nº películas"),
-                        y=alt.Y("genre:N", sort="-x", title="Género"),
-                        color=decision_color("decision"),
-                        tooltip=["genre", "decision", "count"],
-                    )
-                )
-                st.altair_chart(chart_gen, use_container_width=True)
-
-        # 3) Décadas
-        elif view == "Distribución por décadas":
-            if "decade_label" not in df_g.columns:
-                st.info("No hay información suficiente de 'year' para calcular décadas.")
-            else:
-                df_dec = df_g.dropna(subset=["decade_label"]).copy()
-                counts_year_dec = (
-                    df_dec.groupby(["decade_label", "decision"])["title"]
-                    .count()
-                    .reset_index()
-                    .rename(columns={"title": "count"})
-                )
-                chart_year = (
-                    alt.Chart(counts_year_dec)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("decade_label:O", title="Década"),
-                        y=alt.Y("count:Q", stack="normalize", title="% de películas"),
-                        color=decision_color("decision"),
-                        tooltip=["decade_label", "decision", "count"],
-                    )
-                )
-                st.altair_chart(chart_year, use_container_width=True)
-
-        # 4) IMDb vs votos
-        elif view == "IMDb vs nº votos":
-            if "imdb_rating" in df_g.columns and "imdb_votes" in df_g.columns:
-                chart_scatter = (
-                    alt.Chart(df_g.dropna(subset=["imdb_rating", "imdb_votes"]))
-                    .mark_circle(size=60, opacity=0.7)
-                    .encode(
-                        x=alt.X("imdb_rating:Q", title="IMDb rating"),
-                        y=alt.Y("imdb_votes:Q", title="IMDb votos", scale=alt.Scale(type="log", nice=True)),
-                        color=decision_color("decision"),
-                        tooltip=["title", "year", "imdb_rating", "imdb_votes", "decision"],
-                    )
-                    .interactive()
-                )
-                st.altair_chart(chart_scatter, use_container_width=True)
-            else:
-                st.info("Faltan columnas imdb_rating / imdb_votes.")
-
-        # 5) IMDb vs tamaño
-        elif view == "IMDb vs tamaño de archivo":
-            if "imdb_rating" in df_g.columns and "file_size_gb" in df_g.columns:
-                chart_scatter = (
-                    alt.Chart(df_g.dropna(subset=["imdb_rating", "file_size_gb"]))
-                    .mark_circle(size=60, opacity=0.7)
-                    .encode(
-                        x=alt.X("imdb_rating:Q", title="IMDb rating"),
-                        y=alt.Y("file_size_gb:Q", title="Tamaño (GB)"),
-                        color=decision_color("decision"),
-                        tooltip=["title", "year", "imdb_rating", "file_size_gb", "decision"],
-                    )
-                    .interactive()
-                )
-                st.altair_chart(chart_scatter, use_container_width=True)
-            else:
-                st.info("Faltan columnas imdb_rating / file_size_gb.")
-
-        # 6) Espacio por biblioteca
-        elif view == "Espacio ocupado por biblioteca":
-            if "file_size_gb" not in df_all.columns:
-                st.info("No existe información de tamaño (file_size).")
-            else:
-                agg = (
-                    df_all.groupby(["library", "decision"])["file_size_gb"]
-                    .sum()
-                    .reset_index()
-                )
-                agg["file_size_gb"] = agg["file_size_gb"].fillna(0.0)
-
                 chart_space = (
                     alt.Chart(agg)
                     .mark_bar()
@@ -846,179 +952,134 @@ with tab5:
                     f"- MAYBE: **{space_maybe:.2f} GB**"
                 )
 
-        # 7) Boxplot IMDb por biblioteca
-        elif view == "Boxplot IMDb por biblioteca":
-            if "imdb_rating" in df_g.columns and "library" in df_g.columns:
-                chart_box = (
-                    alt.Chart(df_g.dropna(subset=["imdb_rating", "library"]))
-                    .mark_boxplot()
-                    .encode(
-                        x=alt.X("library:N", title="Biblioteca"),
-                        y=alt.Y("imdb_rating:Q", title="IMDb rating"),
-                        tooltip=["library"],
-                    )
-                )
-                st.altair_chart(chart_box, use_container_width=True)
-            else:
-                st.info("Faltan columnas imdb_rating / library.")
-
-        # 8) Ranking directores
-        elif view == "Ranking de directores":
-            # Director solo se obtiene del JSON; lo parseamos aquí
-            if "omdb_json" not in df_all.columns:
-                st.info("No existe información OMDb JSON (omdb_json).")
-            else:
-                df_dir = df_all.copy()
-
-                def extract_directors(raw):
-                    d = safe_json_loads_single(raw)
-                    if not isinstance(d, dict):
-                        return []
-                    val = d.get("Director")
-                    if not val:
-                        return []
-                    return [x.strip() for x in str(val).split(",") if x.strip()]
-
-                df_dir["director_list"] = df_dir["omdb_json"].apply(extract_directors)
-                df_dir = df_dir.explode("director_list")
-                df_dir = df_dir[df_dir["director_list"].notna() & (df_dir["director_list"] != "")]
-
-                if df_dir.empty:
-                    st.info("No se encontraron directores en omdb_json.")
-                else:
-                    min_movies = st.slider("Mínimo nº de películas por director", 1, 10, 3)
-
-                    agg = (
-                        df_dir.groupby("director_list")
-                        .agg(
-                            imdb_mean=("imdb_rating", "mean"),
-                            count=("title", "count"),
-                        )
-                        .reset_index()
-                    )
-                    agg = agg[agg["count"] >= min_movies].sort_values("imdb_mean", ascending=False)
-
-                    top_n = st.slider("Top N directores por IMDb medio", 5, 50, 20)
-                    agg_top = agg.head(top_n)
-
-                    chart_dir = (
-                        alt.Chart(agg_top)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("imdb_mean:Q", title="IMDb medio"),
-                            y=alt.Y("director_list:N", sort="-x", title="Director"),
-                            tooltip=[
-                                "director_list",
-                                alt.Tooltip("imdb_mean:Q", format=".2f"),
-                                "count",
-                            ],
-                        )
-                    )
-                    st.altair_chart(chart_dir, use_container_width=True)
-
-        # 9) Palabras frecuentes en títulos
-        elif view == "Palabras frecuentes en títulos (KEEP vs DELETE)":
-            if "title" not in df_all.columns or "decision" not in df_all.columns:
-                st.info("Faltan columnas title / decision.")
-            else:
-                df_words = build_word_counts(df_all, ["KEEP", "DELETE"])
-                if df_words.empty:
-                    st.info("No se pudieron generar recuentos de palabras.")
-                else:
-                    top_n = st.slider("Top N palabras por decisión", 5, 50, 20)
-                    df_words_top = (
-                        df_words.groupby("decision")
-                        .apply(lambda g: g.nlargest(top_n, "count"))
-                        .reset_index(drop=True)
-                    )
-
-                    chart_words = (
-                        alt.Chart(df_words_top)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("count:Q", title="Frecuencia"),
-                            y=alt.Y("word:N", sort="-x", title="Palabra"),
-                            color=decision_color("decision"),
-                            tooltip=["word", "decision", "count"],
-                        )
-                    )
-                    st.altair_chart(chart_words, use_container_width=True)
-
-        # 10) Simulador de limpieza
-        elif view == "Simulador de limpieza por umbrales":
-            col_s1, col_s2, col_s3 = st.columns(3)
-            with col_s1:
-                imdb_thr = st.slider("IMDb máximo para borrar", 0.0, 10.0, 6.0, 0.1)
-            with col_s2:
-                rt_thr = st.slider("RT máximo para borrar", 0, 100, 50, 5)
-            with col_s3:
-                votes_thr = st.slider("Votes máximo para borrar", 0, 100_000, 5_000, 500)
-
-            df_sim = df_all.copy()
-            cond_imdb = df_sim["imdb_rating"].fillna(0) <= imdb_thr
-            cond_rt = df_sim["rt_score"].fillna(0) <= rt_thr
-            cond_votes = df_sim["imdb_votes"].fillna(0) <= votes_thr
-            cond_delete = cond_imdb | cond_rt | cond_votes
-
-            df_to_delete = df_sim[cond_delete].copy()
-            n_delete = len(df_to_delete)
-
-            if "file_size_gb" in df_sim.columns:
-                gb_delete = df_to_delete["file_size_gb"].sum(skipna=True)
-            else:
-                gb_delete = None
-
-            st.markdown(
-                f"- Películas que se borrarían con estos umbrales: **{n_delete}**\n"
-                + (
-                    f"- Espacio potencial a liberar: **{gb_delete:.2f} GB**"
-                    if gb_delete is not None
-                    else "- No hay información de tamaño de archivo."
+    # 8) Boxplot IMDb por biblioteca
+    elif view == "Boxplot IMDb por biblioteca":
+        if "imdb_rating" in df_g.columns and "library" in df_g.columns:
+            chart_box = (
+                alt.Chart(df_g.dropna(subset=["imdb_rating", "library"]))
+                .mark_boxplot()
+                .encode(
+                    x=alt.X("library:N", title="Biblioteca"),
+                    y=alt.Y("imdb_rating:Q", title="IMDb rating"),
+                    tooltip=["library"],
                 )
             )
+            st.altair_chart(chart_box, use_container_width=True)
+        else:
+            st.info("Faltan columnas imdb_rating / library.")
 
-            if not df_to_delete.empty:
-                agg_sim = (
-                    df_to_delete.groupby("library")["title"]
-                    .count()
+    # 9) Ranking de directores
+    elif view == "Ranking de directores":
+        # Director solo se obtiene del JSON; lo parseamos aquí
+        if "omdb_json" not in df_all.columns:
+            st.info("No existe información OMDb JSON (omdb_json).")
+        else:
+            df_dir = df_all.copy()
+
+            def extract_directors(raw):
+                d = safe_json_loads_single(raw)
+                if not isinstance(d, dict):
+                    return []
+                val = d.get("Director")
+                if not val:
+                    return []
+                return [x.strip() for x in str(val).split(",") if x.strip()]
+
+            df_dir["director_list"] = df_dir["omdb_json"].apply(extract_directors)
+            df_dir = df_dir.explode("director_list")
+            df_dir = df_dir[df_dir["director_list"].notna() & (df_dir["director_list"] != "")]
+
+            if df_dir.empty:
+                st.info("No se encontraron directores en omdb_json.")
+            else:
+                min_movies = st.slider("Mínimo nº de películas por director", 1, 10, 3)
+
+                agg = (
+                    df_dir.groupby("director_list")
+                    .agg(
+                        imdb_mean=("imdb_rating", "mean"),
+                        count=("title", "count"),
+                    )
                     .reset_index()
-                    .rename(columns={"title": "count"})
                 )
+                agg = agg[agg["count"] >= min_movies].sort_values("imdb_mean", ascending=False)
 
-                chart_sim = (
-                    alt.Chart(agg_sim)
+                top_n = st.slider("Top N directores por IMDb medio", 5, 50, 20)
+                agg_top = agg.head(top_n)
+
+                chart = (
+                    alt.Chart(agg_top)
                     .mark_bar()
                     .encode(
-                        x=alt.X("library:N", title="Biblioteca"),
-                        y=alt.Y("count:Q", title="Películas que caerían"),
-                        tooltip=["library", "count"],
+                        x=alt.X("director_list:N", title="Director"),
+                        y=alt.Y("imdb_mean:Q", title="IMDb medio"),
+                        tooltip=["director_list", "imdb_mean", "count"],
                     )
                 )
-                st.altair_chart(chart_sim, use_container_width=True)
+                st.altair_chart(chart, use_container_width=True)
 
-                st.markdown("#### Muestra de títulos afectados")
-                st.dataframe(
-                    df_to_delete[
-                        [
-                            "library",
-                            "title",
-                            "year",
-                            "imdb_rating",
-                            "rt_score",
-                            "imdb_votes",
-                            "file_size_gb",
-                        ]
-                    ].head(50),
-                    use_container_width=True,
+    # 10) Palabras más frecuentes en títulos DELETE/MAYBE
+    elif view == "Palabras más frecuentes en títulos DELETE/MAYBE":
+        df_words = build_word_counts(df_g, ["DELETE", "MAYBE"])
+
+        if df_words.empty:
+            st.info("No hay datos suficientes para el análisis de palabras.")
+        else:
+            top_n = st.slider("Top N palabras", 5, 50, 20)
+            df_top = df_words.head(top_n)
+
+            chart = (
+                alt.Chart(df_top)
+                .mark_bar()
+                .encode(
+                    x=alt.X("word:N", title="Palabra"),
+                    y=alt.Y("count:Q", title="Frecuencia"),
+                    color=decision_color("decision"),
+                    tooltip=["word", "decision", "count"],
                 )
+            )
+            st.altair_chart(chart, use_container_width=True)
 
 # ----------------------------------------------------
 # Tab 6: Metadata
 # ----------------------------------------------------
 with tab6:
-    st.write("### Sugerencias de metadata")
-    if os.path.exists(METADATA_SUGG_CSV):
-        df_meta = pd.read_csv(METADATA_SUGG_CSV)
-        st.dataframe(df_meta, use_container_width=True)
+    st.write("### Corrección de metadata (sugerencias)")
+
+    if not os.path.exists(METADATA_SUGG_CSV):
+        st.info("No se encontró el CSV de sugerencias de metadata.")
     else:
-        st.info(f"No se ha encontrado {METADATA_SUGG_CSV}")
+        df_meta = pd.read_csv(METADATA_SUGG_CSV)
+
+        st.write(
+            "Este CSV contiene sugerencias de posibles errores de metadata en Plex.\n"
+            "Puedes filtrarlo y exportarlo si lo necesitas."
+        )
+
+        col_f1, col_f2 = st.columns(2)
+
+        with col_f1:
+            lib_filter = st.multiselect(
+                "Biblioteca", sorted(df_meta["library"].dropna().unique().tolist())
+            )
+        with col_f2:
+            action_filter = st.multiselect(
+                "Acción sugerida", sorted(df_meta["action"].dropna().unique().tolist())
+            )
+
+        if lib_filter:
+            df_meta = df_meta[df_meta["library"].isin(lib_filter)]
+        if action_filter:
+            df_meta = df_meta[df_meta["action"].isin(action_filter)]
+
+        st.write(f"Filas: {len(df_meta)}")
+
+        st.dataframe(df_meta, use_container_width=True, height=400)
+
+        csv_export = df_meta.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "💾 Descargar CSV filtrado",
+            data=csv_export,
+            file_name="metadata_suggestions_filtered.csv",
+            mime="text/csv",
+        )
