@@ -1,6 +1,6 @@
+from collections import Counter
 import json
 import re
-from collections import Counter
 from typing import List
 
 import altair as alt

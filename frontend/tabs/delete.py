@@ -1,6 +1,6 @@
 import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 from backend.delete_logic import delete_files_from_rows
 
@@ -53,7 +53,7 @@ def render(
     grid_response = AgGrid(
         df_view,
         gridOptions=grid_options,
-        update_on="selection_changed",
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
         enable_enterprise_modules=False,
         fit_columns_on_grid_load=True,
         height=500,

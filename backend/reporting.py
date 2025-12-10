@@ -1,6 +1,6 @@
 import csv
 import json
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
 
 def write_all_csv(path: str, rows: List[Dict[str, Any]]) -> None:

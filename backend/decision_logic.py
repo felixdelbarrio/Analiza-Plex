@@ -1,6 +1,5 @@
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List
 
-from backend.scoring import decide_action
 from backend.omdb_client import extract_year_from_omdb
 
 

@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 from frontend.data_utils import safe_json_loads_single
 
@@ -46,7 +46,7 @@ def aggrid_with_row_click(df: pd.DataFrame, key_suffix: str) -> Optional[Dict[st
     grid_response = AgGrid(
         df,
         gridOptions=grid_options,
-        update_on="selection_changed",
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
         enable_enterprise_modules=False,
         fit_columns_on_grid_load=True,
         height=520,

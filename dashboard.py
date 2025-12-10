@@ -1,15 +1,15 @@
 import os
 import warnings
 
+from dotenv import load_dotenv
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
-from frontend.data_utils import format_count_size
-from frontend.components import render_modal
-from frontend.tabs import all_movies, candidates, advanced, delete, charts, metadata
-from backend.summary import compute_summary
 from backend.report_loader import load_reports
+from backend.summary import compute_summary
+from frontend.components import render_modal
+from frontend.data_utils import format_count_size
+from frontend.tabs import advanced, all_movies, candidates, charts, delete, metadata
 
 # ----------------------------------------------------
 # Warnings — silenciar SettingWithCopyWarning (st_aggrid/pandas)

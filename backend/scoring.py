@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Dict, Any
+from typing import Any, Dict, Optional, Tuple
 
 from backend.config import (
     IMDB_KEEP_MIN_RATING,
