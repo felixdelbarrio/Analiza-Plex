@@ -44,6 +44,8 @@ Este proyecto permite:
 ✔ Cache local para acelerar siguientes análisis  
 ✔ Ordenación automática de candidatas a borrar  
 ✔ Clasificación configurable por `.env`  
+✔ Exportación a HTML interactivo avanzado  
+✔ Dashboard con gráficos  
 ✔ Dashboard Streamlit  
 ✔ Exportación HTML  
 ✔ Borrado de archivos con DRY RUN + Confirmación

@@ -359,73 +359,254 @@ def write_csv(path, rows):
 
 
 # ============================================================
-#                        HTML OUTPUT
+#                  HTML INTERACTIVO AVANZADO
 # ============================================================
 
-def write_html_filtered(path, rows):
+def write_html_interactive(path, rows):
     """
-    Genera un informe HTML sencillo con tabla de las pelis filtradas.
+    Informe HTML avanzado:
+    - Tabla interactiva (DataTables) con búsqueda y filtros
+    - Gráfico de barras de recuento por decision (Chart.js)
+    - Gráfico de barras por biblioteca y decisión
     """
-    html_rows = []
+
+    if not rows:
+        print(f"No hay filas para escribir en {path}.")
+        return
+
+    # Convertimos filas a JSON para usarlas en JS
+    # Nos aseguramos de que todo sea serializable
+    safe_rows = []
     for r in rows:
-        html_rows.append(
-            "<tr>"
-            f"<td>{escape(str(r.get('library', '')))}</td>"
-            f"<td>{escape(str(r.get('title', '')))}</td>"
-            f"<td>{escape(str(r.get('year', '')))}</td>"
-            f"<td>{escape(str(r.get('imdb_rating', '')))}</td>"
-            f"<td>{escape(str(r.get('rt_score', '')))}</td>"
-            f"<td>{escape(str(r.get('imdb_votes', '')))}</td>"
-            f"<td>{escape(str(r.get('decision', '')))}</td>"
-            f"<td>{escape(str(r.get('reason', '')))}</td>"
-            f"<td>{escape(str(r.get('misidentified_hint', '')))}</td>"
-            f"<td><small>{escape(str(r.get('file', '')))}</small></td>"
-            "</tr>"
-        )
+        safe_rows.append({
+            "library": r.get("library", ""),
+            "title": r.get("title", ""),
+            "year": r.get("year", ""),
+            "imdb_rating": r.get("imdb_rating", None),
+            "rt_score": r.get("rt_score", None),
+            "imdb_votes": r.get("imdb_votes", None),
+            "decision": r.get("decision", ""),
+            "reason": r.get("reason", ""),
+            "misidentified_hint": r.get("misidentified_hint", ""),
+            "file": r.get("file", ""),
+        })
+
+    rows_json = json.dumps(safe_rows, ensure_ascii=False)
 
     html = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<title>Informe películas candidatas</title>
+<title>Plex Movies Cleaner — Informe interactivo</title>
+
+<!-- DataTables + jQuery (CDN) -->
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+
+<!-- Chart.js (para gráficos) -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
 <style>
-body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }}
-table {{ border-collapse: collapse; width: 100%; font-size: 14px; }}
-th, td {{ border: 1px solid #ccc; padding: 4px 6px; }}
-th {{ background: #eee; position: sticky; top: 0; }}
-tr:nth-child(even) {{ background: #fafafa; }}
-.bad-delete {{ background: #ffebee; }}
-.maybe-row {{ background: #fffde7; }}
+body {{
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    margin: 1.5rem;
+    background: #fafafa;
+}}
+h1, h2 {{
+    margin-top: 0;
+}}
+.container {{
+    max-width: 1400px;
+    margin: 0 auto;
+}}
+table.dataTable thead th {{
+    background: #eee;
+}}
+.bad-delete {{
+    background-color: #ffebee !important;
+}}
+.maybe-row {{
+    background-color: #fffde7 !important;
+}}
+.chart-container {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}}
+.chart-box {{
+    flex: 1 1 400px;
+    background: #fff;
+    border-radius: 8px;
+    padding: 1rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}}
 </style>
 </head>
 <body>
-<h1>Películas candidatas a revisar / borrar</h1>
-<p>Total filas: {len(rows)}</p>
-<table>
-<thead>
-<tr>
-<th>Library</th>
-<th>Title</th>
-<th>Year</th>
-<th>IMDb</th>
-<th>RT</th>
-<th>IMDb votes</th>
-<th>Decision</th>
-<th>Reason</th>
-<th>MisID hint</th>
-<th>File</th>
-</tr>
-</thead>
-<tbody>
-{''.join(html_rows)}
-</tbody>
-</table>
+<div class="container">
+  <h1>🎬 Plex Movies Cleaner — Informe interactivo</h1>
+  <p>Total filas (DELETE + MAYBE): <strong>{len(rows)}</strong></p>
+
+  <div class="chart-container">
+    <div class="chart-box">
+      <h2>Recuento por decisión</h2>
+      <canvas id="chart_decisions"></canvas>
+    </div>
+    <div class="chart-box">
+      <h2>Películas por biblioteca y decisión</h2>
+      <canvas id="chart_libraries"></canvas>
+    </div>
+  </div>
+
+  <h2>Tabla interactiva (candidatas)</h2>
+  <table id="movies" class="display" style="width:100%">
+    <thead>
+      <tr>
+        <th>Library</th>
+        <th>Title</th>
+        <th>Year</th>
+        <th>IMDb</th>
+        <th>RT</th>
+        <th>IMDb votes</th>
+        <th>Decision</th>
+        <th>Reason</th>
+        <th>MisID hint</th>
+        <th>File</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+const rows = {rows_json};
+
+function buildTables() {{
+    const tbody = $('#movies tbody');
+    rows.forEach(r => {{
+        const cls = r.decision === 'DELETE' ? 'bad-delete' :
+                    (r.decision === 'MAYBE' ? 'maybe-row' : '');
+        const tr = $(`
+            <tr class="${{cls}}">
+                <td>${{r.library || ''}}</td>
+                <td>${{r.title || ''}}</td>
+                <td>${{r.year || ''}}</td>
+                <td>${{r.imdb_rating ?? ''}}</td>
+                <td>${{r.rt_score ?? ''}}</td>
+                <td>${{r.imdb_votes ?? ''}}</td>
+                <td>${{r.decision || ''}}</td>
+                <td>${{r.reason || ''}}</td>
+                <td>${{r.misidentified_hint || ''}}</td>
+                <td><small>${{r.file || ''}}</small></td>
+            </tr>
+        `);
+        tbody.append(tr);
+    }});
+
+    $('#movies').DataTable({{
+        pageLength: 50,
+        order: [[3, 'asc']],
+    }});
+}}
+
+function buildCharts() {{
+    const counts = {{}};
+    const byLibraryDecision = {{}};
+
+    rows.forEach(r => {{
+        const d = r.decision || 'UNKNOWN';
+        counts[d] = (counts[d] || 0) + 1;
+
+        const lib = r.library || 'Sin biblioteca';
+        if (!byLibraryDecision[lib]) byLibraryDecision[lib] = {{}};
+        byLibraryDecision[lib][d] = (byLibraryDecision[lib][d] || 0) + 1;
+    }});
+
+    // --- Chart decisiones ---
+    const ctxDecisions = document.getElementById('chart_decisions').getContext('2d');
+    const decLabels = Object.keys(counts);
+    const decValues = decLabels.map(k => counts[k]);
+
+    new Chart(ctxDecisions, {{
+        type: 'bar',
+        data: {{
+            labels: decLabels,
+            datasets: [{{
+                label: 'Número de películas',
+                data: decValues
+            }}]
+        }},
+        options: {{
+            responsive: true,
+            plugins: {{
+                legend: {{ display: false }},
+            }},
+            scales: {{
+                y: {{ beginAtZero: true }}
+            }}
+        }}
+    }});
+
+    // --- Chart bibliotecas x decision ---
+    const libs = Object.keys(byLibraryDecision);
+    const allDecisions = Array.from(new Set(
+        Object.values(byLibraryDecision).flatMap(d => Object.keys(d))
+    ));
+
+    const datasets = allDecisions.map(dec => {{
+        return {{
+            label: dec,
+            data: libs.map(lib => byLibraryDecision[lib][dec] || 0),
+            stack: 'stack1'
+        }};
+    }});
+
+    const ctxLibs = document.getElementById('chart_libraries').getContext('2d');
+    new Chart(ctxLibs, {{
+        type: 'bar',
+        data: {{
+            labels: libs,
+            datasets: datasets
+        }},
+        options: {{
+            responsive: true,
+            plugins: {{
+                legend: {{
+                    position: 'bottom'
+                }}
+            }},
+            scales: {{
+                x: {{
+                    stacked: true,
+                    ticks: {{
+                        autoSkip: false,
+                        maxRotation: 60,
+                        minRotation: 30
+                    }}
+                }},
+                y: {{
+                    stacked: true,
+                    beginAtZero: true
+                }}
+            }}
+        }}
+    }});
+}}
+
+$(document).ready(function() {{
+    buildTables();
+    buildCharts();
+}});
+</script>
+
 </body>
 </html>
 """
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"HTML generado: {path}")
+    print(f"HTML interactivo generado: {path}")
 
 
 # ============================================================
@@ -467,8 +648,8 @@ def analyze_all_libraries():
     filtered = sort_filtered_rows(filtered)
     write_csv(f"{OUTPUT_PREFIX}_filtered.csv", filtered)
 
-    # Informe HTML de filtradas
-    write_html_filtered(f"{OUTPUT_PREFIX}_filtered.html", filtered)
+    # Informe HTML interactivo de filtradas
+    write_html_interactive(f"{OUTPUT_PREFIX}_filtered.html", filtered)
 
 
 # ============================================================

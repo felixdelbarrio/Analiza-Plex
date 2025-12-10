@@ -3,6 +3,7 @@ import pandas as pd
 from pathlib import Path
 
 import streamlit as st
+import altair as alt
 from dotenv import load_dotenv
 
 # ----------------------------------------------------
@@ -48,8 +49,7 @@ def delete_files_from_rows(rows):
             logs.append(f"[DRY RUN] {title} -> NO se borra (DELETE_DRY_RUN=true): {file_path}")
             continue
 
-        # DELETE_REQUIRE_CONFIRM lo gestionaremos desde la UI de Streamlit
-        # (es decir, solo llegamos aquí si el usuario ya confirmó en la interfaz)
+        # DELETE_REQUIRE_CONFIRM lo gestionamos desde la UI de Streamlit
         try:
             os.remove(p)
             logs.append(f"[OK] BORRADO {title} -> {file_path}")
@@ -62,7 +62,7 @@ def delete_files_from_rows(rows):
 
 
 # ----------------------------------------------------
-# Carga de CSVs
+# Configuración Streamlit
 # ----------------------------------------------------
 st.set_page_config(page_title="Plex Movies Cleaner", layout="wide")
 st.title("🎬 Plex Movies Cleaner — Dashboard")
@@ -74,26 +74,75 @@ if not os.path.exists(ALL_CSV):
 df_all = pd.read_csv(ALL_CSV)
 df_filtered = pd.read_csv(FILTERED_CSV) if os.path.exists(FILTERED_CSV) else None
 
+# Aseguramos tipos numéricos donde aplica
+for col in ["imdb_rating", "rt_score", "imdb_votes", "year", "plex_rating"]:
+    if col in df_all.columns:
+        df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
+
+
 # ----------------------------------------------------
-# Resumen
+# Resumen + gráficos rápidos
 # ----------------------------------------------------
 st.subheader("Resumen general")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("Películas totales", len(df_all))
 with col2:
     st.metric("KEEP", int((df_all["decision"] == "KEEP").sum()))
 with col3:
     st.metric("DELETE + MAYBE", int(df_all["decision"].isin(["DELETE", "MAYBE"]).sum()))
+with col4:
+    if "imdb_rating" in df_all.columns:
+        st.metric("IMDb medio", round(df_all["imdb_rating"].mean(skipna=True), 2))
+
+st.markdown("---")
+
+# Mini-gráficos en el resumen
+col_a, col_b = st.columns(2)
+with col_a:
+    st.caption("Distribución por decisión")
+    if "decision" in df_all.columns:
+        counts_dec = df_all["decision"].value_counts().reset_index()
+        counts_dec.columns = ["decision", "count"]
+        chart_dec = (
+            alt.Chart(counts_dec)
+            .mark_bar()
+            .encode(
+                x=alt.X("decision:N", title="Decisión"),
+                y=alt.Y("count:Q", title="Nº de películas"),
+                tooltip=["decision", "count"],
+            )
+        )
+        st.altair_chart(chart_dec, use_container_width=True)
+
+with col_b:
+    st.caption("Histograma IMDb rating")
+    if "imdb_rating" in df_all.columns:
+        chart_hist = (
+            alt.Chart(df_all.dropna(subset=["imdb_rating"]))
+            .mark_bar()
+            .encode(
+                x=alt.X("imdb_rating:Q", bin=alt.Bin(maxbins=20), title="IMDb rating"),
+                y=alt.Y("count():Q", title="Nº de películas"),
+                tooltip=["count()"],
+            )
+        )
+        st.altair_chart(chart_hist, use_container_width=True)
 
 st.markdown("---")
 
 # ----------------------------------------------------
 # Pestañas
 # ----------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["📚 Todas", "⚠️ Candidatas (DELETE/MAYBE)", "🔎 Búsqueda avanzada", "🧹 Borrado de archivos"]
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    [
+        "📚 Todas",
+        "⚠️ Candidatas (DELETE/MAYBE)",
+        "🔎 Búsqueda avanzada",
+        "🧹 Borrado de archivos",
+        "📊 Gráficos"
+    ]
 )
 
 # ----------------------------------------------------
@@ -227,3 +276,85 @@ with tab4:
 
                 st.success(f"Borrado completado. OK: {num_ok}, Errores: {num_error}")
                 st.text_area("Log de operación", value="\n".join(logs), height=300)
+
+
+# ----------------------------------------------------
+# Tab 5: Gráficos detallados
+# ----------------------------------------------------
+with tab5:
+    st.write("### 📊 Visualización de datos")
+
+    if df_all.empty:
+        st.warning("No hay datos para mostrar.")
+    else:
+        # Selector de biblioteca (opcional)
+        libs = ["(Todas)"] + sorted(df_all["library"].dropna().unique())
+        sel_lib = st.selectbox("Filtrar por biblioteca (para gráficos)", libs)
+        df_g = df_all.copy()
+        if sel_lib != "(Todas)":
+            df_g = df_g[df_g["library"] == sel_lib]
+
+        # Row 1: IMDb vs votos
+        colg1, colg2 = st.columns(2)
+
+        with colg1:
+            st.caption("IMDb rating vs número de votos (color por decisión)")
+            if "imdb_rating" in df_g.columns and "imdb_votes" in df_g.columns:
+                chart_scatter = (
+                    alt.Chart(df_g.dropna(subset=["imdb_rating", "imdb_votes"]))
+                    .mark_circle(size=60, opacity=0.7)
+                    .encode(
+                        x=alt.X("imdb_rating:Q", title="IMDb rating"),
+                        y=alt.Y("imdb_votes:Q", title="IMDb votos", scale=alt.Scale(type="log", nice=True)),
+                        color=alt.Color("decision:N", title="Decisión"),
+                        tooltip=["title", "year", "imdb_rating", "imdb_votes", "decision"],
+                    )
+                    .interactive()
+                )
+                st.altair_chart(chart_scatter, use_container_width=True)
+
+        with colg2:
+            st.caption("Recuento de películas por biblioteca y decisión")
+            if "library" in df_g.columns and "decision" in df_g.columns:
+                counts_lib_dec = (
+                    df_g.groupby(["library", "decision"])["title"]
+                    .count()
+                    .reset_index()
+                    .rename(columns={"title": "count"})
+                )
+                chart_lib_dec = (
+                    alt.Chart(counts_lib_dec)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("library:N", title="Biblioteca"),
+                        y=alt.Y("count:Q", title="Nº de películas"),
+                        color=alt.Color("decision:N", title="Decisión"),
+                        tooltip=["library", "decision", "count"],
+                    )
+                )
+                st.altair_chart(chart_lib_dec, use_container_width=True)
+
+        st.markdown("---")
+
+        # Row 2: evolución por año
+        st.caption("Distribución por año y decisión (stacked)")
+        if "year" in df_g.columns and "decision" in df_g.columns:
+            df_year = df_g.dropna(subset=["year"])
+            df_year["year"] = df_year["year"].astype(int)
+            counts_year_dec = (
+                df_year.groupby(["year", "decision"])["title"]
+                .count()
+                .reset_index()
+                .rename(columns={"title": "count"})
+            )
+            chart_year = (
+                alt.Chart(counts_year_dec)
+                .mark_bar()
+                .encode(
+                    x=alt.X("year:O", title="Año"),
+                    y=alt.Y("count:Q", stack="normalize", title="% de películas"),
+                    color=alt.Color("decision:N", title="Decisión"),
+                    tooltip=["year", "decision", "count"],
+                )
+            )
+            st.altair_chart(chart_year, use_container_width=True)
