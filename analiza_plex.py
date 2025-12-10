@@ -2,7 +2,10 @@ import os
 import csv
 import json
 import time
+import math
 import requests
+from typing import Optional, Dict, Any, List, Tuple
+
 from dotenv import load_dotenv
 from plexapi.server import PlexServer
 from html import escape
@@ -16,12 +19,13 @@ load_dotenv()
 PLEX_BASEURL = os.getenv("PLEX_BASEURL")
 PLEX_TOKEN = os.getenv("PLEX_TOKEN")
 OMDB_API_KEY = os.getenv("OMDB_API_KEY")
+
 OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "report")
 
 raw_exclude = os.getenv("EXCLUDE_LIBRARIES", "")
 EXCLUDE_LIBRARIES = [x.strip() for x in raw_exclude.split(",") if x.strip()]
 
-# Umbrales de decisión desde .env (con valores por defecto)
+# Umbrales de decisión para KEEP/DELETE (como ya tenías)
 IMDB_KEEP_MIN_RATING = float(os.getenv("IMDB_KEEP_MIN_RATING", "7.0"))
 IMDB_KEEP_MIN_RATING_WITH_RT = float(os.getenv("IMDB_KEEP_MIN_RATING_WITH_RT", "6.5"))
 RT_KEEP_MIN_SCORE = int(os.getenv("RT_KEEP_MIN_SCORE", "75"))
@@ -38,9 +42,19 @@ IMDB_MIN_VOTES_FOR_KNOWN = int(os.getenv("IMDB_MIN_VOTES_FOR_KNOWN", "1000"))
 OMDB_RATE_LIMIT_WAIT_SECONDS = int(os.getenv("OMDB_RATE_LIMIT_WAIT_SECONDS", "60"))
 OMDB_RATE_LIMIT_MAX_RETRIES = int(os.getenv("OMDB_RATE_LIMIT_MAX_RETRIES", "1"))
 
+# ----- Parámetros extra para corrección de metadata -----
+METADATA_OUTPUT_PREFIX = os.getenv("METADATA_OUTPUT_PREFIX", "metadata_fix")
+METADATA_MIN_RATING_FOR_OK = float(os.getenv("METADATA_MIN_RATING_FOR_OK", "6.0"))
+METADATA_MIN_VOTES_FOR_OK = int(os.getenv("METADATA_MIN_VOTES_FOR_OK", "2000"))
+
+METADATA_DRY_RUN = os.getenv("METADATA_DRY_RUN", "true").lower() == "true"
+METADATA_APPLY_CHANGES = os.getenv("METADATA_APPLY_CHANGES", "false").lower() == "true"
+
 print("DEBUG PLEX_BASEURL:", PLEX_BASEURL)
 print("DEBUG TOKEN:", "****" if PLEX_TOKEN else None)
 print("DEBUG EXCLUDE_LIBRARIES:", EXCLUDE_LIBRARIES)
+print("DEBUG METADATA_DRY_RUN:", METADATA_DRY_RUN)
+print("DEBUG METADATA_APPLY_CHANGES:", METADATA_APPLY_CHANGES)
 
 # ============================================================
 #                      CACHE OMDb LOCAL
@@ -49,7 +63,7 @@ print("DEBUG EXCLUDE_LIBRARIES:", EXCLUDE_LIBRARIES)
 CACHE_FILE = "omdb_cache.json"
 
 
-def load_cache():
+def load_cache() -> Dict[str, Any]:
     if os.path.exists(CACHE_FILE):
         try:
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -59,7 +73,7 @@ def load_cache():
     return {}
 
 
-def save_cache(cache):
+def save_cache(cache: Dict[str, Any]) -> None:
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, indent=2, ensure_ascii=False)
 
@@ -80,10 +94,9 @@ def connect_plex():
     return plex
 
 
-def get_imdb_id_from_plex_guid(guid: str | None):
+def get_imdb_id_from_plex_guid(guid: Optional[str]) -> Optional[str]:
     if not guid:
         return None
-
     if "imdb://" in guid:
         try:
             part = guid.split("imdb://", 1)[1]
@@ -96,43 +109,33 @@ def get_imdb_id_from_plex_guid(guid: str | None):
 #               CONSULTA A OMDb + CACHE + DELAY
 # ============================================================
 
-def query_omdb_by_imdb_id(imdb_id: str | None):
+def query_omdb(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Consulta OMDb respetando:
-    - Cache local (omdb_cache.json)
-    - Delay de 0.5s entre peticiones
-    - Espera OMDB_RATE_LIMIT_WAIT_SECONDS y reintenta una vez si hay "Request limit reached!"
-    - Si vuelve a fallar tras el reintento, parada limpia del script.
+    Envoltura genérica para OMDb:
+    - Usa cache
+    - Respeta rate limit
     """
-    if not imdb_id:
-        return None
-
-    # 1) Revisar CACHE primero
-    if imdb_id in omdb_cache:
-        return omdb_cache[imdb_id]
-
     if not OMDB_API_KEY:
         raise RuntimeError("No hay OMDB_API_KEY en .env")
 
+    key = json.dumps(params, sort_keys=True, ensure_ascii=False)
+
+    if key in omdb_cache:
+        return omdb_cache[key]
+
     attempts = 0
+    base_params = dict(params)
+    base_params["apikey"] = OMDB_API_KEY
 
     while True:
-        time.sleep(0.5)  # delay anti-rate-limit
-
-        params = {
-            "apikey": OMDB_API_KEY,
-            "i": imdb_id,
-            "type": "movie",
-        }
-
+        time.sleep(0.5)
         try:
-            resp = requests.get("https://www.omdbapi.com/", params=params, timeout=10)
+            resp = requests.get("https://www.omdbapi.com/", params=base_params, timeout=10)
             data = resp.json()
         except Exception as e:
-            print(f"Error consultando OMDb para {imdb_id}: {e}")
+            print(f"Error consultando OMDb con params={params}: {e}")
             return None
 
-        # rate limit
         if data.get("Error") == "Request limit reached!":
             if attempts < OMDB_RATE_LIMIT_MAX_RETRIES:
                 attempts += 1
@@ -148,15 +151,21 @@ def query_omdb_by_imdb_id(imdb_id: str | None):
                 print("⛔ Deteniendo el script para evitar un bloqueo diario más largo.\n")
                 raise SystemExit("Script stopped due to OMDb rate limit.")
 
-        if data.get("Response") != "True":
-            return None
-
-        omdb_cache[imdb_id] = data
+        omdb_cache[key] = data
         save_cache(omdb_cache)
         return data
 
 
-def extract_ratings_from_omdb(data):
+def query_omdb_by_imdb_id(imdb_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not imdb_id:
+        return None
+    data = query_omdb({"i": imdb_id, "type": "movie"})
+    if not data or data.get("Response") != "True":
+        return None
+    return data
+
+
+def extract_ratings_from_omdb(data: Optional[Dict[str, Any]]) -> Tuple[Optional[float], Optional[int], Optional[int]]:
     imdb_rating = None
     imdb_votes = None
     rt_score = None
@@ -188,23 +197,47 @@ def extract_ratings_from_omdb(data):
 
     return imdb_rating, imdb_votes, rt_score
 
+
+def extract_ratings_from_omdb_detail(data: Dict[str, Any]) -> Tuple[Optional[float], Optional[int]]:
+    """
+    Versión simplificada para el sistema de metadata:
+    solo imdbRating + imdbVotes.
+    """
+    imdb_rating = None
+    imdb_votes = None
+
+    if not data:
+        return imdb_rating, imdb_votes
+
+    try:
+        val = data.get("imdbRating")
+        if val and val != "N/A":
+            imdb_rating = float(val)
+    except Exception:
+        pass
+
+    try:
+        votes = data.get("imdbVotes", "0").replace(",", "")
+        imdb_votes = int(votes)
+    except Exception:
+        pass
+
+    return imdb_rating, imdb_votes
+
 # ============================================================
-#                    DECISIÓN + REASON + FLAGS
+#                    DECISIÓN KEEP / DELETE
 # ============================================================
 
 def decide_keep_or_delete_with_reason(imdb_rating, imdb_votes, rt_score):
     """
     Devuelve tuple: (decision, reason)
     decision: KEEP / MAYBE / DELETE / UNKNOWN
-    reason: string explicando el porqué.
     """
-    # Sin info suficiente
     if imdb_rating is None and rt_score is None and (
         imdb_votes is None or imdb_votes < IMDB_MIN_VOTES_FOR_KNOWN
     ):
         return "UNKNOWN", "no_ratings_and_few_votes"
 
-    # KEEP fuerte por rating
     if imdb_rating is not None and imdb_rating >= IMDB_KEEP_MIN_RATING:
         return "KEEP", "high_imdb_rating"
 
@@ -219,7 +252,6 @@ def decide_keep_or_delete_with_reason(imdb_rating, imdb_votes, rt_score):
     if imdb_votes is not None and imdb_votes >= IMDB_KEEP_MIN_VOTES:
         return "KEEP", "very_popular_imdb_votes"
 
-    # DELETE candidatos claros
     if imdb_rating is not None and imdb_rating < IMDB_DELETE_MAX_RATING:
         if rt_score is not None:
             if (
@@ -232,17 +264,10 @@ def decide_keep_or_delete_with_reason(imdb_rating, imdb_votes, rt_score):
             if imdb_votes is not None and imdb_votes < IMDB_DELETE_MAX_VOTES_NO_RT:
                 return "DELETE", "low_imdb_few_votes_no_rt"
 
-    # Resto → MAYBE
     return "MAYBE", "middle_values"
 
 
 def detect_misidentified(movie, imdb_rating, imdb_votes, rt_score):
-    """
-    Heurística sencilla para marcar posibles películas mal identificadas:
-    - Sin imdb_id
-    - O puntuaciones extremadamente raras/contradictorias
-    - O año / título muy raros (por ahora solo datos externos)
-    """
     reasons = []
 
     if getattr(movie, "guid", None) is None:
@@ -251,25 +276,17 @@ def detect_misidentified(movie, imdb_rating, imdb_votes, rt_score):
     if imdb_rating is None and imdb_votes is None and rt_score is None:
         reasons.append("no_external_data")
 
-    # Por ejemplo, rating muy bajo pero con muchos votos puede ser intencionado,
-    # pero rating altísimo con 0 votos podría ser raro.
     if imdb_rating is not None and imdb_votes is not None:
         if imdb_rating >= 9.5 and imdb_votes < 100:
             reasons.append("suspicious_high_rating_low_votes")
 
     return ",".join(reasons) if reasons else ""
 
-
 # ============================================================
 #                ORDENACIÓN DEL CSV FILTRADO
 # ============================================================
 
 def sort_filtered_rows(rows):
-    """
-    Ordena primero DELETE luego MAYBE, y dentro de cada grupo
-    de peor a menos peor usando imdb_rating, rt_score y imdb_votes.
-    """
-
     def score(row):
         decision = row.get("decision")
         group = 0 if decision == "DELETE" else 1
@@ -287,95 +304,15 @@ def sort_filtered_rows(rows):
 
     return sorted(rows, key=score)
 
-
-# ============================================================
-#                ANÁLISIS DE UNA BIBLIOTECA
-# ============================================================
-
-def analyze_single_library(section):
-    rows = []
-
-    print(f"\n--- Analizando biblioteca: {section.title} ---")
-    movies = section.all()
-    total = len(movies)
-    print(f"Películas encontradas en {section.title}: {total}")
-
-    for idx, movie in enumerate(movies, start=1):
-        print(f"[{idx}/{total}] {movie.title} ({movie.year})")
-
-        imdb_id = get_imdb_id_from_plex_guid(movie.guid)
-
-        omdb_data = query_omdb_by_imdb_id(imdb_id)
-        imdb_rating, imdb_votes, rt_score = extract_ratings_from_omdb(omdb_data)
-
-        decision, reason = decide_keep_or_delete_with_reason(
-            imdb_rating, imdb_votes, rt_score
-        )
-
-        misid_flag = detect_misidentified(movie, imdb_rating, imdb_votes, rt_score)
-
-        file_path = None
-        try:
-            if movie.media and movie.media[0].parts:
-                file_path = movie.media[0].parts[0].file
-        except Exception:
-            pass
-
-        rows.append({
-            "library": section.title,
-            "title": movie.title,
-            "year": movie.year,
-            "imdb_id": imdb_id,
-            "imdb_rating": imdb_rating,
-            "imdb_votes": imdb_votes,
-            "rt_score": rt_score,
-            "plex_rating": movie.rating,
-            "file": file_path,
-            "decision": decision,
-            "reason": reason,
-            "misidentified_hint": misid_flag,
-        })
-
-    return rows
-
-
-# ============================================================
-#                        CSV OUTPUT
-# ============================================================
-
-def write_csv(path, rows):
-    if not rows:
-        print(f"No hay filas para escribir en {path}.")
-        return
-
-    fieldnames = rows[0].keys()
-
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        w.writerows(rows)
-
-    print(f"CSV generado: {path}")
-
-
 # ============================================================
 #                  HTML INTERACTIVO AVANZADO
 # ============================================================
 
 def write_html_interactive(path, rows):
-    """
-    Informe HTML avanzado:
-    - Tabla interactiva (DataTables) con búsqueda y filtros
-    - Gráfico de barras de recuento por decision (Chart.js)
-    - Gráfico de barras por biblioteca y decisión
-    """
-
     if not rows:
         print(f"No hay filas para escribir en {path}.")
         return
 
-    # Convertimos filas a JSON para usarlas en JS
-    # Nos aseguramos de que todo sea serializable
     safe_rows = []
     for r in rows:
         safe_rows.append({
@@ -399,12 +336,10 @@ def write_html_interactive(path, rows):
 <meta charset="utf-8">
 <title>Plex Movies Cleaner — Informe interactivo</title>
 
-<!-- DataTables + jQuery (CDN) -->
 <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 
-<!-- Chart.js (para gráficos) -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
@@ -524,7 +459,6 @@ function buildCharts() {{
         byLibraryDecision[lib][d] = (byLibraryDecision[lib][d] || 0) + 1;
     }});
 
-    // --- Chart decisiones ---
     const ctxDecisions = document.getElementById('chart_decisions').getContext('2d');
     const decLabels = Object.keys(counts);
     const decValues = decLabels.map(k => counts[k]);
@@ -549,7 +483,6 @@ function buildCharts() {{
         }}
     }});
 
-    // --- Chart bibliotecas x decision ---
     const libs = Object.keys(byLibraryDecision);
     const allDecisions = Array.from(new Set(
         Object.values(byLibraryDecision).flatMap(d => Object.keys(d))
@@ -608,6 +541,296 @@ $(document).ready(function() {{
         f.write(html)
     print(f"HTML interactivo generado: {path}")
 
+# ============================================================
+#            SISTEMA AUTOMÁTICO CORRECCIÓN METADATA
+# ============================================================
+
+def search_omdb_candidates(title: str, year: Optional[int]) -> List[Dict[str, Any]]:
+    params = {"s": title, "type": "movie"}
+    if year:
+        params["y"] = str(year)
+    data = query_omdb(params)
+    if not data or data.get("Response") != "True":
+        return []
+    results = data.get("Search", [])
+    return results if isinstance(results, list) else []
+
+
+def score_candidate(plex_title: str, plex_year: Optional[int], cand: Dict[str, Any]) -> float:
+    cand_year = None
+    try:
+        cy = cand.get("Year")
+        if cy and cy != "N/A":
+            cand_year = int(cy[:4])
+    except Exception:
+        pass
+
+    score = 0.0
+
+    if plex_year and cand_year:
+        if plex_year == cand_year:
+            score += 40
+        else:
+            diff = abs(plex_year - cand_year)
+            score += max(0, 30 - diff * 5)
+
+    plen = len(plex_title or "")
+    clen = len(cand.get("Title") or "")
+    if plen and clen:
+        diff_len = abs(plen - clen)
+        score += max(0, 20 - diff_len * 2)
+
+    imdb_id = cand.get("imdbID")
+    if imdb_id:
+        detail = query_omdb_by_imdb_id(imdb_id)
+        imdb_rating, imdb_votes = extract_ratings_from_omdb_detail(detail or {})
+        if imdb_rating:
+            score += imdb_rating * 3
+        if imdb_votes:
+            score += math.log10(imdb_votes + 1) * 5
+
+    return score
+
+
+def find_best_omdb_match(title: str, year: Optional[int]) -> Optional[Dict[str, Any]]:
+    candidates = search_omdb_candidates(title, year)
+    if not candidates:
+        return None
+
+    best = None
+    best_score = -1.0
+
+    for cand in candidates:
+        s = score_candidate(title, year, cand)
+        if s > best_score:
+            best_score = s
+            best = cand
+
+    if not best:
+        return None
+
+    imdb_id = best.get("imdbID")
+    detail = query_omdb_by_imdb_id(imdb_id) if imdb_id else None
+    imdb_rating, imdb_votes = extract_ratings_from_omdb_detail(detail or {})
+
+    result = {
+        "imdb_id": imdb_id,
+        "title": best.get("Title"),
+        "year": best.get("Year"),
+        "type": best.get("Type"),
+        "poster": best.get("Poster"),
+        "imdb_rating": imdb_rating,
+        "imdb_votes": imdb_votes,
+        "raw_detail": detail,
+        "score": best_score,
+    }
+    return result
+
+
+def is_metadata_suspicious(
+    imdb_id: Optional[str],
+    imdb_rating: Optional[float],
+    imdb_votes: Optional[int],
+) -> Tuple[bool, List[str]]:
+    reasons = []
+
+    if imdb_id is None:
+        reasons.append("no_imdb_id")
+
+    if imdb_rating is None and imdb_votes is None:
+        reasons.append("no_external_data")
+
+    if imdb_rating is not None and imdb_rating < METADATA_MIN_RATING_FOR_OK:
+        reasons.append("low_rating")
+
+    if imdb_votes is not None and imdb_votes < METADATA_MIN_VOTES_FOR_OK:
+        reasons.append("few_votes")
+
+    return (len(reasons) > 0), reasons
+
+
+def apply_new_imdb_guid(movie, new_imdb_id: str) -> Tuple[bool, str]:
+    new_guid = f"com.plexapp.agents.imdb://{new_imdb_id}?lang=en"
+    try:
+        if METADATA_DRY_RUN:
+            msg = f"[DRY RUN] Cambiar GUID de '{movie.title}' a {new_guid}"
+            return True, msg
+
+        if not METADATA_APPLY_CHANGES:
+            msg = (
+                f"[SKIP] METADATA_APPLY_CHANGES=false -> No se modifica GUID de '{movie.title}' "
+                f"(nuevo GUID sugerido: {new_guid})"
+            )
+            return False, msg
+
+        # 🚨 Esta parte puede necesitar ajuste según tu versión de Plex/plexapi
+        movie._edit(**{"guid": new_guid})
+        movie.reload()
+        movie.refresh()
+
+        msg = f"[OK] GUID de '{movie.title}' actualizado a {new_guid} y metadata refrescada"
+        return True, msg
+
+    except Exception as e:
+        return False, f"[ERROR] Fallo actualizando GUID de '{movie.title}' -> {e}"
+
+
+def write_suggestions_csv(path: str, rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        print(f"No hay sugerencias para escribir en {path}.")
+        return
+
+    fieldnames = [
+        "library",
+        "plex_title",
+        "plex_year",
+        "plex_imdb_id",
+        "plex_imdb_rating",
+        "plex_imdb_votes",
+        "suspicious_reason",
+        "suggested_imdb_id",
+        "suggested_title",
+        "suggested_year",
+        "suggested_imdb_rating",
+        "suggested_imdb_votes",
+        "suggested_score",
+        "confidence",
+        "action",
+    ]
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+    print(f"CSV de sugerencias generado: {path}")
+
+# ============================================================
+#                ANÁLISIS DE UNA BIBLIOTECA
+# ============================================================
+
+def analyze_single_library(section, suggestions: List[Dict[str, Any]], logs: List[str]):
+    rows = []
+
+    print(f"\n--- Analizando biblioteca: {section.title} ---")
+    movies = section.all()
+    total = len(movies)
+    print(f"Películas encontradas en {section.title}: {total}")
+
+    for idx, movie in enumerate(movies, start=1):
+        print(f"[{idx}/{total}] {movie.title} ({movie.year})")
+
+        imdb_id = get_imdb_id_from_plex_guid(getattr(movie, "guid", None))
+
+        omdb_data = query_omdb_by_imdb_id(imdb_id) if imdb_id else None
+        imdb_rating, imdb_votes, rt_score = extract_ratings_from_omdb(omdb_data)
+
+        decision, reason = decide_keep_or_delete_with_reason(
+            imdb_rating, imdb_votes, rt_score
+        )
+
+        misid_flag = detect_misidentified(movie, imdb_rating, imdb_votes, rt_score)
+
+        file_path = None
+        try:
+            if movie.media and movie.media[0].parts:
+                file_path = movie.media[0].parts[0].file
+        except Exception:
+            pass
+
+        rows.append({
+            "library": section.title,
+            "title": movie.title,
+            "year": movie.year,
+            "imdb_id": imdb_id,
+            "imdb_rating": imdb_rating,
+            "imdb_votes": imdb_votes,
+            "rt_score": rt_score,
+            "plex_rating": movie.rating,
+            "file": file_path,
+            "decision": decision,
+            "reason": reason,
+            "misidentified_hint": misid_flag,
+        })
+
+        # ------ Parte de corrección de metadata ------
+        suspicious, suspicious_reasons = is_metadata_suspicious(imdb_id, imdb_rating, imdb_votes)
+        if not suspicious:
+            continue
+
+        try:
+            suggested = find_best_omdb_match(movie.title, movie.year)
+        except SystemExit:
+            raise
+        except Exception as e:
+            logs.append(f"[ERROR] Buscando match OMDb para '{movie.title}': {e}")
+            continue
+
+        if not suggested:
+            logs.append(f"[INFO] Sin sugerencia clara para '{movie.title}'")
+            continue
+
+        raw_score = suggested.get("score", 0.0)
+        confidence = max(0, min(100, int(raw_score)))
+
+        suggested_imdb_id = suggested.get("imdb_id")
+        suggested_title = suggested.get("title")
+        suggested_year = suggested.get("year")
+        suggested_imdb_rating = suggested.get("imdb_rating")
+        suggested_imdb_votes = suggested.get("imdb_votes")
+
+        action = "REVIEW"
+        if confidence >= 70:
+            action = "AUTO_APPLY"
+        elif confidence >= 40:
+            action = "MAYBE"
+
+        suggestions.append({
+            "library": section.title,
+            "plex_title": movie.title,
+            "plex_year": movie.year,
+            "plex_imdb_id": imdb_id,
+            "plex_imdb_rating": imdb_rating,
+            "plex_imdb_votes": imdb_votes,
+            "suspicious_reason": ",".join(suspicious_reasons),
+            "suggested_imdb_id": suggested_imdb_id,
+            "suggested_title": suggested_title,
+            "suggested_year": suggested_year,
+            "suggested_imdb_rating": suggested_imdb_rating,
+            "suggested_imdb_votes": suggested_imdb_votes,
+            "suggested_score": raw_score,
+            "confidence": confidence,
+            "action": action,
+        })
+
+        if action == "AUTO_APPLY" and suggested_imdb_id:
+            ok, msg = apply_new_imdb_guid(movie, suggested_imdb_id)
+            logs.append(msg)
+        else:
+            logs.append(
+                f"[INFO] '{movie.title}' -> sugerido imdb_id={suggested_imdb_id} "
+                f"(conf={confidence}, action={action})"
+            )
+
+    return rows
+
+# ============================================================
+#                        CSV OUTPUT
+# ============================================================
+
+def write_csv(path, rows):
+    if not rows:
+        print(f"No hay filas para escribir en {path}.")
+        return
+
+    fieldnames = rows[0].keys()
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+    print(f"CSV generado: {path}")
 
 # ============================================================
 #                   ANÁLISIS GLOBAL DE LIBRERÍAS
@@ -623,6 +846,8 @@ def analyze_all_libraries():
     print("\nExcluyendo:", EXCLUDE_LIBRARIES if EXCLUDE_LIBRARIES else "ninguna")
 
     all_rows = []
+    suggestions: List[Dict[str, Any]] = []
+    logs: List[str] = []
 
     for section in sections:
         if section.title in EXCLUDE_LIBRARIES:
@@ -633,7 +858,7 @@ def analyze_all_libraries():
             print(f"Saltando {section.title} porque no es de películas (tipo: {section.type})")
             continue
 
-        rows_section = analyze_single_library(section)
+        rows_section = analyze_single_library(section, suggestions, logs)
         all_rows.extend(rows_section)
 
     if not all_rows:
@@ -651,6 +876,16 @@ def analyze_all_libraries():
     # Informe HTML interactivo de filtradas
     write_html_interactive(f"{OUTPUT_PREFIX}_filtered.html", filtered)
 
+    # CSV de sugerencias de metadata
+    sugg_csv = f"{METADATA_OUTPUT_PREFIX}_suggestions.csv"
+    write_suggestions_csv(sugg_csv, suggestions)
+
+    # Log de metadata
+    log_path = f"{METADATA_OUTPUT_PREFIX}_log.txt"
+    with open(log_path, "w", encoding="utf-8") as f:
+        for line in logs:
+            f.write(line + "\n")
+    print(f"Log de corrección metadata: {log_path}")
 
 # ============================================================
 #                        MAIN

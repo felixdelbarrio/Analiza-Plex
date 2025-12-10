@@ -45,6 +45,7 @@ Este proyecto permite:
 ✔ Ordenación automática de candidatas a borrar  
 ✔ Clasificación configurable por `.env`  
 ✔ Exportación a HTML interactivo avanzado  
+✔ Sistema automático para corregir metadata en Plex  
 ✔ Dashboard con gráficos  
 ✔ Dashboard Streamlit  
 ✔ Exportación HTML  
@@ -312,10 +313,7 @@ __pycache__/
 
 # ✨ Mejoras futuras
 
-- Exportación a HTML interactivo avanzado  
-- Dashboard con gráficos  
 - Integración con TMDb API  
-- Sistema automático para corregir metadata en Plex  
 - Limpieza automática programada  
 
 ---

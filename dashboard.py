@@ -18,6 +18,10 @@ DELETE_REQUIRE_CONFIRM = os.getenv("DELETE_REQUIRE_CONFIRM", "true").lower() == 
 ALL_CSV = f"{OUTPUT_PREFIX}_all.csv"
 FILTERED_CSV = f"{OUTPUT_PREFIX}_filtered.csv"
 
+# Para las sugerencias de metadata
+METADATA_OUTPUT_PREFIX = os.getenv("METADATA_OUTPUT_PREFIX", "metadata_fix")
+METADATA_SUGG_CSV = f"{METADATA_OUTPUT_PREFIX}_suggestions.csv"
+
 
 # ----------------------------------------------------
 # Función de borrado reutilizando la lógica del script
@@ -49,7 +53,6 @@ def delete_files_from_rows(rows):
             logs.append(f"[DRY RUN] {title} -> NO se borra (DELETE_DRY_RUN=true): {file_path}")
             continue
 
-        # DELETE_REQUIRE_CONFIRM lo gestionamos desde la UI de Streamlit
         try:
             os.remove(p)
             logs.append(f"[OK] BORRADO {title} -> {file_path}")
@@ -79,6 +82,15 @@ for col in ["imdb_rating", "rt_score", "imdb_votes", "year", "plex_rating"]:
     if col in df_all.columns:
         df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
 
+# Cargamos sugerencias de metadata (si existen)
+if os.path.exists(METADATA_SUGG_CSV):
+    df_meta = pd.read_csv(METADATA_SUGG_CSV)
+    # Normalizamos algunos tipos
+    for col in ["plex_imdb_rating", "plex_imdb_votes", "suggested_imdb_rating", "suggested_imdb_votes", "confidence"]:
+        if col in df_meta.columns:
+            df_meta[col] = pd.to_numeric(df_meta[col], errors="coerce")
+else:
+    df_meta = None
 
 # ----------------------------------------------------
 # Resumen + gráficos rápidos
@@ -135,13 +147,14 @@ st.markdown("---")
 # ----------------------------------------------------
 # Pestañas
 # ----------------------------------------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
     [
         "📚 Todas",
         "⚠️ Candidatas (DELETE/MAYBE)",
         "🔎 Búsqueda avanzada",
         "🧹 Borrado de archivos",
-        "📊 Gráficos"
+        "📊 Gráficos",
+        "🧠 Sugerencias metadata",
     ]
 )
 
@@ -358,3 +371,97 @@ with tab5:
                 )
             )
             st.altair_chart(chart_year, use_container_width=True)
+
+
+# ----------------------------------------------------
+# Tab 6: Sugerencias de metadata
+# ----------------------------------------------------
+with tab6:
+    st.write("### 🧠 Sugerencias automáticas de metadata (OMDb)")
+
+    if df_meta is None or df_meta.empty:
+        st.info(
+            "No se ha encontrado ningún fichero de sugerencias "
+            f"(**{METADATA_SUGG_CSV}**).\n\n"
+            "Ejecuta primero `analiza_plex.py` con el sistema de corrección de metadata activado."
+        )
+    else:
+        st.markdown(
+            "- Cada fila representa una película cuya metadata parece sospechosa.\n"
+            "- Se muestran los datos actuales de Plex y la sugerencia de OMDb.\n"
+            "- La columna **action** indica: `AUTO_APPLY`, `MAYBE` o `REVIEW`."
+        )
+
+        # Creamos una columna de label de confianza (baja / media / alta)
+        def confidence_label(c):
+            try:
+                c = float(c)
+            except Exception:
+                return "Desconocida"
+            if c >= 70:
+                return "Alta"
+            if c >= 40:
+                return "Media"
+            return "Baja"
+
+        df_meta["confidence_level"] = df_meta["confidence"].apply(confidence_label)
+
+        # Filtros
+        col_m1, col_m2, col_m3 = st.columns(3)
+        with col_m1:
+            libs_meta = sorted(df_meta["library"].dropna().unique())
+            lib_filter = st.multiselect("Filtrar por biblioteca", libs_meta)
+
+        with col_m2:
+            actions = sorted(df_meta["action"].dropna().unique())
+            action_filter = st.multiselect("Filtrar por acción", actions, default=actions)
+
+        with col_m3:
+            min_conf, max_conf = st.slider(
+                "Rango de confianza",
+                0, 100, (0, 100),
+                help="Basado en el score heurístico de matching OMDb"
+            )
+
+        df_view = df_meta.copy()
+
+        if lib_filter:
+            df_view = df_view[df_view["library"].isin(lib_filter)]
+        if action_filter:
+            df_view = df_view[df_view["action"].isin(action_filter)]
+
+        df_view = df_view[
+            (df_view["confidence"].fillna(0) >= min_conf)
+            & (df_view["confidence"].fillna(0) <= max_conf)
+        ]
+
+        st.write(f"Sugerencias tras filtros: **{len(df_view)}**")
+
+        if not df_view.empty:
+            cols_show = [
+                "library",
+                "plex_title",
+                "plex_year",
+                "plex_imdb_id",
+                "plex_imdb_rating",
+                "plex_imdb_votes",
+                "suspicious_reason",
+                "suggested_imdb_id",
+                "suggested_title",
+                "suggested_year",
+                "suggested_imdb_rating",
+                "suggested_imdb_votes",
+                "confidence",
+                "confidence_level",
+                "action",
+            ]
+            cols_show = [c for c in cols_show if c in df_view.columns]
+
+            st.dataframe(df_view[cols_show], use_container_width=True)
+
+        st.markdown(
+            "> 💡 Para aplicar cambios automáticamente en Plex, ajusta "
+            "`METADATA_DRY_RUN=false` y `METADATA_APPLY_CHANGES=true` en el `.env` "
+            "y vuelve a ejecutar `analiza_plex.py`. (La parte de GUID puede requerir "
+            "un pequeño ajuste según tu versión de Plex/plexapi)."
+        )

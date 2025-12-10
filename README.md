@@ -46,6 +46,7 @@ Este proyecto permite:
 ✔ Clasificación configurable por `.env`  
 ✔ Exportación a HTML interactivo avanzado  
 ✔ Dashboard con gráficos  
+✔ Sistema automático para corregir metadata en Plex  
 ✔ Dashboard Streamlit  
 ✔ Exportación HTML  
 ✔ Borrado de archivos con DRY RUN + Confirmación
@@ -313,7 +314,6 @@ __pycache__/
 # ✨ Mejoras futuras
 
 - Integración con TMDb API  
-- Sistema automático para corregir metadata en Plex  
 - Limpieza automática programada  
 
 ---
