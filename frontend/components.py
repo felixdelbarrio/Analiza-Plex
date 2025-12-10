@@ -70,10 +70,17 @@ def aggrid_with_row_click(df: pd.DataFrame, key_suffix: str) -> Optional[Dict[st
     return selected_raw[0]
 
 
-def render_detail_card(row: Dict[str, Any], show_modal_button: bool = True) -> None:
+def render_detail_card(
+    row: Dict[str, Any],
+    show_modal_button: bool = True,
+    button_key_prefix: Optional[str] = None,
+) -> None:
     """
     Panel lateral / ficha de detalle tipo Plex.
     Parseamos omdb_json SOLO para esta fila (si existe).
+
+    button_key_prefix se usa para dar un key único al botón "Abrir en ventana"
+    por pestaña (all / candidates / advanced, etc.) y evitar colisiones.
     """
     if row is None:
         st.info("Haz click en una fila para ver su detalle.")
@@ -135,7 +142,10 @@ def render_detail_card(row: Dict[str, Any], show_modal_button: bool = True) -> N
             st.markdown(f"[📺 Ver en Plex Web]({plex_url})")
 
         if show_modal_button:
-            if st.button("🪟 Abrir en ventana"):
+            # Key único por pestaña para evitar StreamlitDuplicateElementKey
+            key_suffix = button_key_prefix or "default"
+            button_key = f"open_modal_{key_suffix}"
+            if st.button("🪟 Abrir en ventana", key=button_key):
                 st.session_state["modal_row"] = row
                 st.session_state["modal_open"] = True
                 st.rerun()

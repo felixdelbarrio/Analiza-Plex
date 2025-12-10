@@ -16,4 +16,4 @@ def render(df_all: pd.DataFrame, df_filtered: pd.DataFrame | None) -> None:
     with col_grid:
         selected_row = aggrid_with_row_click(df_view, "filtered")
     with col_detail:
-        render_detail_card(selected_row)
+        render_detail_card(selected_row, button_key_prefix="candidates")
