@@ -1,331 +1,187 @@
-# 📘 Plex Movies Cleaner — Analizador Inteligente de Películas para Plex
+# 🎬 Plex Movies Cleaner  
+### Automatiza la limpieza, análisis y auditoría de tus bibliotecas Plex
 
-Este proyecto permite:
-
-- Conectarse a tu servidor **Plex**
-- Analizar todas las bibliotecas de películas (excepto las que excluyas)
-- Consultar puntuaciones de **IMDb** y **Rotten Tomatoes** vía OMDb  
-- Clasificar las películas como `KEEP`, `MAYBE`, `DELETE`, `UNKNOWN`
-- Generar **dos CSV**:
-  - `*_all.csv` → todas tus películas analizadas  
-  - `*_filtered.csv` → solo las películas “prescindibles” ordenadas de peor a menos mala
-- Evitar bloqueos de OMDb usando:
-  - ⏱ Delay
-  - 💾 Cache local
-  - 🛑 Sistema de espera + reintento + parada limpia  
-- Integración con **Streamlit** para un dashboard gráfico
-- Sistema de **borrado seguro** de archivos desde la interfaz
+Plex Movies Cleaner es una herramienta modular que analiza películas en Plex usando datos de OMDb, decide automáticamente si deben conservarse o eliminarse, detecta errores de metadata, genera informes interactivos y ofrece un dashboard avanzado para inspección manual y borrado seguro.
 
 ---
 
-# 📄 Índice
+## 🚀 Funcionalidades principales
 
-- [⚙️ Características](#⚙️-características)
-- [🧩 Requisitos](#🧩-requisitos)
-- [🛠 Instalación en macOS](#🛠-instalación-en-macos)
-- [🐧 Instalación en Raspbian / Raspberry Pi OS](#🐧-instalación-en-raspbian--raspberry-pi-os)
-- [🔑 Obtener Token de Plex](#🔑-obtener-token-de-plex)
-- [⚙️ Configuración del `.env`](#⚙️-configuración-del-env)
-- [▶️ Ejecutar el analizador](#▶️-ejecutar-el-analizador)
-- [📊 Dashboard Streamlit](#📊-dashboard-streamlit)
-- [🧹 Borrado seguro de archivos](#🧹-borrado-seguro-de-archivos)
-- [💾 Cache `omdb_cache.json`](#💾-cache-omdb_cachejson)
-- [🚨 Manejo del rate limit de OMDb](#🚨-manejo-del-rate-limit-de-omdb)
-- [📊 Estructura de los CSV](#📊-estructura-de-los-csv)
-- [🛑 `.gitignore` recomendado](#🛑-gitignore-recomendado)
-- [✨ Mejoras futuras](#✨-mejoras-futuras)
+### 🔍 Análisis automático de películas
+- Conexión a Plex vía API.
+- Extracción de rating IMDb, votos y score RottenTomatoes.
+- Scoring detallado (KEEP / DELETE / MAYBE / UNKNOWN).
+- Columna adicional `scoring_rule` para depurar qué regla se aplicó.
 
----
+### 🧠 Detección de metadata incorrecta
+- Comparación Plex vs OMDb.
+- Identificación de discrepancias severas (título, año).
+- Sugerencias automáticas:
+  - `"Fix title"`
+  - `"Fix year"`
+  - `"Fix title & year"`
 
-# ⚙️ Características
+### 📊 Informes generados automáticamente
+- `report_all.csv` (todas las películas)
+- `report_filtered.csv` (DELETE y MAYBE)
+- `report_filtered.html` (informe interactivo autónomo)
+- `metadata_fix_suggestions.csv`
+- `metadata_fix_log.txt`
 
-✔ Conexión directa con Plex  
-✔ Obtención de IMDb + Rotten Tomatoes vía OMDb  
-✔ Cache local para acelerar siguientes análisis  
-✔ Ordenación automática de candidatas a borrar  
-✔ Clasificación configurable por `.env`  
-✔ Exportación a HTML interactivo avanzado  
-✔ Dashboard con gráficos  
-✔ Sistema automático para corregir metadata en Plex  
-✔ Dashboard Streamlit  
-✔ Exportación HTML  
-✔ Borrado de archivos con DRY RUN + Confirmación
+### 🧼 Borrado controlado de archivos
+- Basado en `report_filtered.csv`
+- Con confirmación opcional
+- Opción `DELETE_DRY_RUN` para revisión segura
 
----
-
-# 🧩 Requisitos
-
-- Python 3.9+
-- Servidor Plex accesible en red local
-- API key de OMDb → https://www.omdbapi.com  
-- Token de Plex
-- macOS / Linux / Raspberry Pi OS
+### 🖥️ Dashboard interactivo (Streamlit)
+Incluye:
+- Vista completa
+- Candidatas DELETE/MAYBE
+- Búsqueda avanzada
+- Gráficos Altair (incluido scoring_rule)
+- Corrección de metadata
 
 ---
 
-# 🛠 Instalación en macOS
+## 📁 Arquitectura del proyecto
 
-### 1. Instalar Homebrew (si no lo tienes)
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
+backend/
+    config.py
+    plex_client.py
+    omdb_client.py
+    analyzer.py
+    scoring.py
+    decision_logic.py
+    metadata_fix.py
+    delete_logic.py
+    reporting.py
+    summary.py
+    report_loader.py
 
-### 2. Instalar Python 3
+frontend/
+    data_utils.py
+    components.py
+    tabs/
+        all_movies.py
+        candidates.py
+        advanced.py
+        delete.py
+        charts.py
+        metadata.py
 
-```bash
-brew install python
-```
-
-Verificar:
-
-```bash
-python3 --version
+dashboard.py
+analiza_plex.py
 ```
 
 ---
 
-# 🐧 Instalación en Raspbian / Raspberry Pi OS
+## ⚙️ Configuración
 
-```bash
-sudo apt update
-sudo apt install python3 python3-pip python3-venv -y
-```
-
-Verificar:
-
-```bash
-python3 --version
-pip3 --version
-```
-
----
-
-# 🧪 Crear el entorno virtual
-
-En la carpeta del proyecto:
-
-```bash
-python3 -m venv venv
-```
-
-Activar:
-
-```bash
-source venv/bin/activate
-```
-
----
-
-# 📦 Instalar dependencias
-
-```bash
-pip install plexapi python-dotenv requests streamlit pandas
-```
-
----
-
-# 🔑 Obtener Token de Plex
-
-1. Entra en https://app.plex.tv/desktop  
-2. Selecciona tu servidor local  
-3. Pulsa **F12**  
-4. Ve a pestaña **Network / Red**  
-5. Busca:
-
-```
-X-Plex-Token
-```
-
-6. Copia el valor del token en tu `.env`.
-
----
-
-# ⚙️ Configuración del `.env`
-
-Crea un archivo:
-
-```
-.env
-```
-
-Contenido recomendado:
+Crear archivo `.env`:
 
 ```env
-# --- Datos de Plex ---
-PLEX_BASEURL=http://192.168.1.10:32400
-PLEX_TOKEN=TU_PLEX_TOKEN
-OMDB_API_KEY=TU_API_KEY
+PLEX_BASEURL=http://192.168.X.X:32400
+PLEX_TOKEN=TU_TOKEN
+OMDB_API_KEY=TU_API
 
-# --- Bibliotecas a excluir ---
-EXCLUDE_LIBRARIES=Series TV, Música, Familia, Fotos
-
-# --- Prefijo CSV ---
 OUTPUT_PREFIX=report
+METADATA_OUTPUT_PREFIX=metadata_fix
 
-# --- Lógica de decisión ---
-IMDB_KEEP_MIN_RATING=7.0
-IMDB_KEEP_MIN_RATING_WITH_RT=6.5
-RT_KEEP_MIN_SCORE=75
-IMDB_KEEP_MIN_VOTES=50000
-IMDB_DELETE_MAX_RATING=6.0
-RT_DELETE_MAX_SCORE=50
-IMDB_DELETE_MAX_VOTES=5000
-IMDB_DELETE_MAX_VOTES_NO_RT=2000
-IMDB_MIN_VOTES_FOR_KNOWN=1000
-
-# --- Control del rate-limit de OMDb ---
-OMDB_RATE_LIMIT_WAIT_SECONDS=60
-OMDB_RATE_LIMIT_MAX_RETRIES=1
-
-# --- Configuración borrado ---
 DELETE_DRY_RUN=true
 DELETE_REQUIRE_CONFIRM=true
+SILENT_MODE=false
+```
+
+Opcionales:
+- `EXCLUDE_LIBRARIES`
+- `OMDB_RATE_LIMIT_WAIT_SECONDS`
+- `OMDB_RATE_LIMIT_MAX_RETRIES`
+- `OMDB_RETRY_EMPTY_CACHE`
+
+---
+
+## 🏃 Instalación
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ---
 
-# ▶️ Ejecutar el analizador
+## ▶️ Ejecución
+
+### 1. Analizar biblioteca Plex
 
 ```bash
-source venv/bin/activate
 python analiza_plex.py
 ```
 
-Genera:
+Genera todos los CSV y el informe HTML.
 
-- `report_all.csv`
-- `report_filtered.csv`
-- `report_filtered.html`
-- `omdb_cache.json`
-
----
-
-# 📊 Dashboard Streamlit
-
-Ejecutar:
+### 2. Abrir dashboard web
 
 ```bash
 streamlit run dashboard.py
 ```
 
-Accede en navegador a:
+---
 
-```
-http://localhost:8501
-```
+## 📊 Ejemplo de scoring_rule
 
+Cada película queda clasificada según regla de decisión:
+
+| scoring_rule         | Significado |
+|----------------------|-------------|
+| KEEP_IMDB            | Rating y votos IMDb altos |
+| KEEP_RT_IMDB         | Rating IMDb + buen RT score |
+| DELETE_IMDB          | Rating bajo + pocos votos |
+| DELETE_IMDB_NO_RT    | Versión “sin RT” del caso anterior |
+| FALLBACK_MAYBE       | No se cumple KEEP ni DELETE |
+| NO_DATA              | Falta info de OMDb |
+
+Esto permite auditar rápidamente si el modelo de scoring está funcionando como deseas.
+
+---
+
+## 📄 Informes generados
+
+### `report_all.csv`
 Incluye:
+- ratings IMDb/RT
+- decisión final
+- scoring_rule
+- misidentified_hint
+- metadata básica
+- omdb_json en bruto
 
-- Vista completa del catálogo
-- Candidatas DELETE/MAYBE
-- Búsqueda avanzada
-- Borrado seguro desde interfaz
+### `report_filtered.html`
+HTML autónomo con:
+- tabla interactiva
+- gráficos de decisión
+- top de bibliotecas
+- filtros dinámicos
 
----
-
-# 🧹 Borrado seguro de archivos
-
-El dashboard permite borrar archivos marcados como `DELETE`.
-
-Protecciones:
-
-- DRY RUN → no borra nada
-- Confirmación obligatoria → escribir **BORRAR**
-- Logs detallados
-
-Si quieres borrarlo desde consola:
-
-```bash
-python delete_from_csv.py
-```
+Ideal para compartir sin necesidad de Streamlit.
 
 ---
 
-# 💾 Cache `omdb_cache.json`
+## ⚠️ Advertencias
 
-Guarda resultados de OMDb:
-
-- Acelera análisis futuros
-- Reduce bloqueos
-- Persistente entre ejecuciones
+- El borrado físico debe usarse con precaución.
+- OMDb puede aplicar límites de uso; la aplicación detecta esto y utiliza caché.
+- Plex puede tardar unos segundos en procesar cambios de metadata.
 
 ---
 
-# 🚨 Manejo del rate limit de OMDb
+## 📜 Licencia
 
-Si OMDb devuelve:
-
-```json
-{"Error": "Request limit reached!"}
-```
-
-El script:
-
-1. Espera `OMDB_RATE_LIMIT_WAIT_SECONDS` (por defecto 60s)  
-2. Reintenta 1 vez  
-3. Si vuelve a fallar → para el análisis de manera segura
+Ver archivo `LICENSE`.
 
 ---
 
-# 📊 Estructura de los CSV
+## 🤝 Contribuciones
 
-### report_all.csv  
-Contiene todo tu catálogo.
-
-Columnas principales:
-
-| Campo | Descripción |
-|-------|-------------|
-| library | Biblioteca Plex |
-| title | Título |
-| year | Año |
-| imdb_rating | Nota IMDb |
-| rt_score | Rotten Tomatoes |
-| imdb_votes | Votos IMDb |
-| plex_rating | Nota Plex |
-| decision | KEEP / MAYBE / DELETE / UNKNOWN |
-| reason | Motivo |
-| misidentified_hint | Pistas sobre identificación incorrecta |
-| file | Ruta del archivo |
-
-### report_filtered.csv  
-Solo contiene:
-
-- DELETE  
-- MAYBE  
-
-Ordenado automáticamente de peor a menos peor.
-
----
-
-# 🛑 .gitignore recomendado
-
-```
-venv/
-.env
-omdb_cache.json
-__pycache__/
-*.pyc
-```
-
----
-
-# ✨ Mejoras futuras
-
-- Integración con TMDb API  
-- Limpieza automática programada  
-
----
-
-# 🎉 ¡Listo!
-
-Tu ecosistema Plex Movies Cleaner está preparado para:
-
-- Analizar  
-- Valorar  
-- Filtrar  
-- Visualizar  
-- Borrar  
-- Mantener limpio tu servidor Plex  
-
+Se acepta código estructurado, modular y respetando el diseño actual del backend y frontend.
