@@ -3,13 +3,11 @@ from typing import Any, Dict, Optional, Tuple
 from backend.config import (
     IMDB_KEEP_MIN_RATING,
     IMDB_KEEP_MIN_RATING_WITH_RT,
-    RT_KEEP_MIN_SCORE,
     IMDB_KEEP_MIN_VOTES,
     IMDB_DELETE_MAX_RATING,
-    RT_DELETE_MAX_SCORE,  # actualmente no se usa, pero lo mantenemos por compatibilidad
     IMDB_DELETE_MAX_VOTES,
     IMDB_DELETE_MAX_VOTES_NO_RT,
-    IMDB_MIN_VOTES_FOR_KNOWN,  # actualmente no se usa, pero lo mantenemos por compatibilidad
+    RT_KEEP_MIN_SCORE,
 )
 
 

@@ -14,21 +14,26 @@ raw_exclude = os.getenv("EXCLUDE_LIBRARIES", "")
 EXCLUDE_LIBRARIES = [x.strip() for x in raw_exclude.split(",") if x.strip()]
 
 # Umbrales de decisión para KEEP/DELETE
+#---- keep thresholds ----
+IMDB_KEEP_MIN_VOTES = int(os.getenv("IMDB_KEEP_MIN_VOTES", "50000"))
 IMDB_KEEP_MIN_RATING = float(os.getenv("IMDB_KEEP_MIN_RATING", "7.0"))
 IMDB_KEEP_MIN_RATING_WITH_RT = float(
     os.getenv("IMDB_KEEP_MIN_RATING_WITH_RT", "6.5")
 )
 RT_KEEP_MIN_SCORE = int(os.getenv("RT_KEEP_MIN_SCORE", "75"))
-IMDB_KEEP_MIN_VOTES = int(os.getenv("IMDB_KEEP_MIN_VOTES", "50000"))
-
-IMDB_DELETE_MAX_RATING = float(os.getenv("IMDB_DELETE_MAX_RATING", "6.0"))
+#---- delete thresholds ----
 RT_DELETE_MAX_SCORE = int(os.getenv("RT_DELETE_MAX_SCORE", "50"))
 IMDB_DELETE_MAX_VOTES = int(os.getenv("IMDB_DELETE_MAX_VOTES", "5000"))
 IMDB_DELETE_MAX_VOTES_NO_RT = int(
     os.getenv("IMDB_DELETE_MAX_VOTES_NO_RT", "2000")
 )
-
+IMDB_DELETE_MAX_RATING = float(os.getenv("IMDB_DELETE_MAX_RATING", "6.0"))
+#---- unkown thresholds ----
 IMDB_MIN_VOTES_FOR_KNOWN = int(os.getenv("IMDB_MIN_VOTES_FOR_KNOWN", "1000"))
+# LOW thresholds"
+IMDB_RATING_LOW_THRESHOLD= float(os.getenv("IMDB_RATING_LOW_THRESHOLD", "3.0"))
+RT_RATING_LOW_THRESHOLD= int(os.getenv("RT_RATING_LOW_THRESHOLD", "20"))
+
 
 # Rate limit OMDb
 OMDB_RATE_LIMIT_WAIT_SECONDS = int(

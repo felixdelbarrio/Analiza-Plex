@@ -2,6 +2,11 @@ from typing import Optional, Dict, Any, List
 
 from backend.omdb_client import extract_year_from_omdb
 
+from backend.config import (
+    IMDB_DELETE_MAX_VOTES_NO_RT,
+    IMDB_RATING_LOW_THRESHOLD, 
+    RT_RATING_LOW_THRESHOLD,
+)
 
 def detect_misidentified(
     plex_title: str,
@@ -36,13 +41,13 @@ def detect_misidentified(
             hints.append(f"Year mismatch: Plex={plex_year}, OMDb={omdb_year}")
 
     # Rating muy bajo con muchos votos
-    if imdb_rating is not None and imdb_rating < 3.0 and (imdb_votes or 0) > 2000:
+    if imdb_rating is not None and imdb_rating < IMDB_RATING_LOW_THRESHOLD and (imdb_votes or 0) > IMDB_DELETE_MAX_VOTES_NO_RT:
         hints.append(
             "IMDB rating muy bajo para tantos votos, comprobar identificación."
         )
 
     # RT muy bajo con muchos votos
-    if rt_score is not None and rt_score < 20 and (imdb_votes or 0) > 2000:
+    if rt_score is not None and rt_score < RT_RATING_LOW_THRESHOLD and (imdb_votes or 0) > IMDB_DELETE_MAX_VOTES_NO_RT:
         hints.append("RT score muy bajo para película aparentemente conocida.")
 
     return " | ".join(hints)
