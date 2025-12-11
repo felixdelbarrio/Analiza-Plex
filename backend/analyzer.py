@@ -12,9 +12,9 @@ from backend.omdb_client import (
     search_omdb_with_candidates,
 )
 from backend.decision_logic import (
-    decide_action,
     detect_misidentified,
 )
+from backend.scoring import decide_action
 from backend.metadata_fix import (
     generate_metadata_suggestions_row,
 )
