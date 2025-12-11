@@ -15,4 +15,4 @@ __pycache__/
 #Ignorar los reportes 
 report_*.csv
 report_*.html
-metadata_*.txt
+metadata_*.*
