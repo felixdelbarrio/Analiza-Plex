@@ -1,23 +1,19 @@
 import json
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from backend.plex_client import (
-    get_movie_file_info,
-    get_imdb_id_from_plex_guid,
-    get_best_search_title,
-)
+from backend.metadata_fix import generate_metadata_suggestions_row
+from backend.decision_logic import detect_misidentified
 from backend.omdb_client import (
     extract_ratings_from_omdb,
     search_omdb_by_imdb_id,
     search_omdb_with_candidates,
 )
-from backend.decision_logic import (
-    detect_misidentified,
+from backend.plex_client import (
+    get_best_search_title,
+    get_imdb_id_from_movie,
+    get_movie_file_info,
 )
 from backend.scoring import decide_action
-from backend.metadata_fix import (
-    generate_metadata_suggestions_row,
-)
 
 
 def analyze_single_movie(
@@ -42,29 +38,36 @@ def analyze_single_movie(
     # Info de archivo
     file_path, file_size = get_movie_file_info(movie)
 
-    # ID IMDb inicial (desde Plex)
-    imdb_id = get_imdb_id_from_plex_guid(guid or "")
+    # ID IMDb inicial (intentando aprovechar todos los GUIDs de Plex)
+    imdb_id = get_imdb_id_from_movie(movie)
 
+    # ----------------------------------------------------
     # Búsqueda OMDb
+    # ----------------------------------------------------
     if imdb_id:
         omdb_data = search_omdb_by_imdb_id(imdb_id)
     else:
         search_title = get_best_search_title(movie)
         omdb_data = search_omdb_with_candidates(search_title, year)
 
-    # Si Plex no traía imdb_id pero OMDb sí lo tiene, lo aprovechamos
-    if not imdb_id and omdb_data:
+    # Si Plex no traía imdb_id o traía algo no estándar, pero OMDb sí lo tiene,
+    # lo aprovechamos SIEMPRE para rellenar / corregir el campo imdb_id.
+    if omdb_data:
         omdb_imdb_id = omdb_data.get("imdbID")
         if omdb_imdb_id:
             imdb_id = omdb_imdb_id
 
-    # Ratings y score
+    # ----------------------------------------------------
+    # Ratings y scoring
+    # ----------------------------------------------------
     imdb_rating, imdb_votes, rt_score = extract_ratings_from_omdb(omdb_data)
 
-    # Decisión KEEP/MAYBE/DELETE/UNKNOWN (usando también el año para votos dinámicos)
+    # Decisión KEEP/MAYBE/DELETE/UNKNOWN (usando también el año para votos dinámicos / bayes)
     decision, reason = decide_action(imdb_rating, imdb_votes, rt_score, year)
 
+    # ----------------------------------------------------
     # Posible misidentificación
+    # ----------------------------------------------------
     misidentified_hint = detect_misidentified(
         title, year, omdb_data, imdb_rating, imdb_votes, rt_score
     )
@@ -73,7 +76,9 @@ def analyze_single_movie(
             f"[MISIDENTIFIED] {library} / {title} ({year}): {misidentified_hint}"
         )
 
-    # Sugerencias metadata
+    # ----------------------------------------------------
+    # Sugerencias de metadata
+    # ----------------------------------------------------
     meta_sugg = generate_metadata_suggestions_row(movie, omdb_data)
     if meta_sugg:
         logs.append(
@@ -81,13 +86,15 @@ def analyze_single_movie(
             f"{meta_sugg.get('suggestions_json')}"
         )
 
+    # ----------------------------------------------------
     # Extras OMDb (poster y trailer si existiera)
+    # ----------------------------------------------------
     poster_url = None
     trailer_url = None
     if omdb_data:
         poster_url = omdb_data.get("Poster")
 
-    row = {
+    row: Dict[str, Any] = {
         "library": library,
         "title": title,
         "year": year,

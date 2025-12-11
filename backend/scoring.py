@@ -73,6 +73,8 @@ def compute_scoring(
           score_bayes = (v / (v + m)) * R + (m / (v + m)) * C
 
         y comparándolo con BAYES_DELETE_MAX_SCORE.
+      - Además, hay una regla explícita de DELETE cuando el rating es bajo
+        pero hay muchos votos para su año (consenso fuerte en que es mala).
 
     NOTA: el parámetro year es opcional para mantener compatibilidad
     con llamadas antiguas que solo pasan (rating, votos, rt_score).
@@ -84,7 +86,9 @@ def compute_scoring(
         "year": year,
     }
 
+    # ----------------------------------------------------
     # Caso sin datos suficientes
+    # ----------------------------------------------------
     if imdb_rating is None and imdb_votes is None and rt_score is None:
         return {
             "decision": "UNKNOWN",
@@ -99,7 +103,11 @@ def compute_scoring(
     if imdb_rating is not None and imdb_votes is not None:
         dynamic_votes_needed = get_votes_threshold_for_year(year)
 
-        if imdb_rating >= IMDB_KEEP_MIN_RATING and imdb_votes >= dynamic_votes_needed:
+        if (
+            dynamic_votes_needed > 0
+            and imdb_rating >= IMDB_KEEP_MIN_RATING
+            and imdb_votes >= dynamic_votes_needed
+        ):
             return {
                 "decision": "KEEP",
                 "reason": (
@@ -126,7 +134,7 @@ def compute_scoring(
             }
 
     # ----------------------------------------------------
-    # Regla DELETE bayesiana (opcional)
+    # Regla DELETE bayesiana (opcional)  [Opción A]
     # ----------------------------------------------------
     if ENABLE_BAYESIAN_SCORING and imdb_rating is not None and imdb_votes is not None:
         m_dynamic = get_votes_threshold_for_year(year)
@@ -153,8 +161,33 @@ def compute_scoring(
             }
 
     # ----------------------------------------------------
+    # Regla DELETE explícita: rating bajo + muchos votos  [Opción B]
+    #  - Captura pelis con consenso fuerte de que son malas:
+    #    rating bajo y muchos votos para su antigüedad.
+    #  - Solo se aplica si tenemos un mínimo dinámico > 0 para ese año.
+    # ----------------------------------------------------
+    if imdb_rating is not None and imdb_votes is not None:
+        dynamic_votes_needed = get_votes_threshold_for_year(year)
+
+        if (
+            dynamic_votes_needed > 0
+            and imdb_rating <= IMDB_DELETE_MAX_RATING
+            and imdb_votes >= dynamic_votes_needed
+        ):
+            return {
+                "decision": "DELETE",
+                "reason": (
+                    "Rating IMDb bajo pero con muchos votos para su antigüedad; "
+                    f"imdbRating={imdb_rating}, imdbVotes={imdb_votes}, "
+                    f"mínimo por año={dynamic_votes_needed}"
+                ),
+                "rule": "DELETE_LOW_RATING_HIGH_VOTES",
+                "inputs": inputs,
+            }
+
+    # ----------------------------------------------------
     # Regla DELETE por IMDb (rating bajo + pocos votos)
-    #   (solo si bayesiano no ha decidido antes)
+    #   (solo si bayesiano / regla explícita no han decidido antes)
     # ----------------------------------------------------
     if imdb_rating is not None and imdb_votes is not None:
         if imdb_rating <= IMDB_DELETE_MAX_RATING and imdb_votes <= IMDB_DELETE_MAX_VOTES:

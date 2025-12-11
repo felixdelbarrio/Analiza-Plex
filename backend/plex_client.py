@@ -80,6 +80,37 @@ def get_imdb_id_from_plex_guid(guid: str) -> Optional[str]:
     return None
 
 
+def get_imdb_id_from_movie(movie) -> Optional[str]:
+    """
+    Intenta obtener un imdb_id (tt...) usando TODA la información
+    de GUIDs de Plex:
+
+      1) Recorre movie.guids (si existe) y busca un tt... en cada id.
+      2) Si no encuentra nada, cae al guid principal (movie.guid)
+         usando get_imdb_id_from_plex_guid, manteniendo el
+         comportamiento histórico.
+
+    Si no se consigue ningún imdb_id, devuelve None.
+    """
+    # 1) Revisar todos los guids individuales
+    try:
+        guids = getattr(movie, "guids", None) or []
+        for g in guids:
+            gid = getattr(g, "id", None)
+            if not gid:
+                gid = str(g)
+            imdb_id = get_imdb_id_from_plex_guid(gid)
+            if imdb_id:
+                return imdb_id
+    except Exception:
+        # No queremos romper el análisis si Plex cambia algo
+        pass
+
+    # 2) Fallback al guid principal, como antes
+    guid = getattr(movie, "guid", None)
+    return get_imdb_id_from_plex_guid(guid or "")
+
+
 def get_best_search_title(movie) -> str:
     """
     Devuelve el título preferido para buscar en OMDb:

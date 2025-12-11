@@ -38,8 +38,12 @@ IMDB_DELETE_MAX_RATING = float(os.getenv("IMDB_DELETE_MAX_RATING", "6.0"))
 IMDB_MIN_VOTES_FOR_KNOWN = int(os.getenv("IMDB_MIN_VOTES_FOR_KNOWN", "1000"))
 
 # ---- LOW thresholds (para misidentificación) ----
-IMDB_RATING_LOW_THRESHOLD = float(os.getenv("IMDB_RATING_LOW_THRESHOLD", "3.0"))
-RT_RATING_LOW_THRESHOLD = int(os.getenv("RT_RATING_LOW_THRESHOLD", "20"))
+IMDB_RATING_LOW_THRESHOLD = float(
+    os.getenv("IMDB_RATING_LOW_THRESHOLD", "3.0")
+)
+RT_RATING_LOW_THRESHOLD = int(
+    os.getenv("RT_RATING_LOW_THRESHOLD", "20")
+)
 
 # ----------------------------------------------------
 # Votos mínimos según antigüedad (para scoring justo)
@@ -47,22 +51,45 @@ RT_RATING_LOW_THRESHOLD = int(os.getenv("RT_RATING_LOW_THRESHOLD", "20"))
 #   IMDB_VOTES_BY_YEAR="1980:500,2000:2000,2010:5000,9999:10000"
 # ----------------------------------------------------
 _IMDB_VOTES_BY_YEAR_RAW = os.getenv(
-    "IMDB_VOTES_BY_YEAR", "1980:500,2000:2000,2010:5000,9999:10000"
+    "IMDB_VOTES_BY_YEAR",
+    "1980:500,2000:2000,2010:5000,9999:10000",
 )
 
-IMDB_VOTES_BY_YEAR = []
-for part in _IMDB_VOTES_BY_YEAR_RAW.split(","):
-    try:
-        year_limit_str, votes_min_str = part.split(":")
-        year_limit = int(year_limit_str.strip())
-        votes_min = int(votes_min_str.strip())
-        IMDB_VOTES_BY_YEAR.append((year_limit, votes_min))
-    except Exception:
-        # Si hay algún trozo mal formado lo ignoramos silenciosamente
-        continue
 
-# Ordenamos por año límite ascendente para que la función auxiliar sea determinista
-IMDB_VOTES_BY_YEAR = sorted(IMDB_VOTES_BY_YEAR, key=lambda x: x[0])
+def _parse_votes_by_year(raw: str):
+    """
+    Parsea cadenas tipo:
+      1980:500,2000:2000,2010:5000,9999:10000
+
+    Admitiendo también comillas alrededor:
+      "1980:500,2000:2000,2010:5000,9999:10000"
+      '1980:500,2000:2000,2010:5000,9999:10000'
+    """
+    if not raw:
+        return []
+
+    # Quitamos comillas exteriores si las hay y espacios
+    cleaned = raw.strip().strip('"').strip("'")
+
+    table = []
+    for part in cleaned.split(","):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        try:
+            year_limit_str, votes_min_str = chunk.split(":")
+            year_limit = int(year_limit_str.strip())
+            votes_min = int(votes_min_str.strip())
+            table.append((year_limit, votes_min))
+        except Exception:
+            # Si hay algún trozo mal formado lo ignoramos silenciosamente
+            continue
+
+    # Ordenamos por año límite ascendente para que sea determinista
+    return sorted(table, key=lambda x: x[0])
+
+
+IMDB_VOTES_BY_YEAR = _parse_votes_by_year(_IMDB_VOTES_BY_YEAR_RAW)
 
 
 def get_votes_threshold_for_year(year: int | None) -> int:
@@ -70,34 +97,48 @@ def get_votes_threshold_for_year(year: int | None) -> int:
     Devuelve el número mínimo de votos exigidos para una película
     según su año, usando la tabla IMDB_VOTES_BY_YEAR.
 
-    - Si year es None o la tabla está vacía, devuelve 0.
-    - Recorre IMDB_VOTES_BY_YEAR en orden y devuelve el primer
-      votes_min cuyo year_limit sea >= year.
+    Reglas:
+      - Si la tabla está vacía: devolvemos IMDB_KEEP_MIN_VOTES (fallback clásico).
+      - Si year es None o no es convertible a int: usamos el tramo más exigente
+        (último de IMDB_VOTES_BY_YEAR).
+      - Recorre IMDB_VOTES_BY_YEAR y devuelve el primer votes_min
+        cuyo year_limit sea >= year.
     """
-    if year is None or not IMDB_VOTES_BY_YEAR:
-        return 0
+    # Si no hay tabla válida, caemos al umbral fijo clásico
+    if not IMDB_VOTES_BY_YEAR:
+        return IMDB_KEEP_MIN_VOTES
 
     try:
-        y = int(year)
+        y = int(year) if year is not None else None
     except (TypeError, ValueError):
-        return 0
+        y = None
+
+    # Si no hay año, usamos la regla más exigente (último tramo)
+    if y is None:
+        return IMDB_VOTES_BY_YEAR[-1][1]
 
     for year_limit, votes_min in IMDB_VOTES_BY_YEAR:
         if y <= year_limit:
             return votes_min
 
-    # Si por lo que sea no ha hecho match, no exigimos votos mínimos
-    return 0
+    # Si por lo que sea no ha hecho match, usamos también el último tramo
+    return IMDB_VOTES_BY_YEAR[-1][1]
+
 
 # ----------------------------------------------------
-#Parámetros para robusteccer el delete scoring 
-# mediante un calculo bayesiano
+# Parámetros para robustecer el delete scoring
+# mediante un cálculo bayesiano
 # ----------------------------------------------------
 ENABLE_BAYESIAN_SCORING = (
     os.getenv("ENABLE_BAYESIAN_SCORING", "false").lower() == "true"
 )
-BAYES_GLOBAL_MEAN_DEFAULT = float(os.getenv("BAYES_GLOBAL_MEAN_DEFAULT", "6.8"))
-BAYES_DELETE_MAX_SCORE = float(os.getenv("BAYES_DELETE_MAX_SCORE", "5.8"))
+BAYES_GLOBAL_MEAN_DEFAULT = float(
+    os.getenv("BAYES_GLOBAL_MEAN_DEFAULT", "6.8")
+)
+BAYES_DELETE_MAX_SCORE = float(
+    os.getenv("BAYES_DELETE_MAX_SCORE", "5.8")
+)
+
 # ----------------------------------------------------
 # Rate limit OMDb
 # ----------------------------------------------------
