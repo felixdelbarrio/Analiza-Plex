@@ -42,7 +42,7 @@ def analyze_single_movie(
     # Info de archivo
     file_path, file_size = get_movie_file_info(movie)
 
-    # ID IMDb
+    # ID IMDb inicial (desde Plex)
     imdb_id = get_imdb_id_from_plex_guid(guid or "")
 
     # Búsqueda OMDb
@@ -52,11 +52,17 @@ def analyze_single_movie(
         search_title = get_best_search_title(movie)
         omdb_data = search_omdb_with_candidates(search_title, year)
 
+    # Si Plex no traía imdb_id pero OMDb sí lo tiene, lo aprovechamos
+    if not imdb_id and omdb_data:
+        omdb_imdb_id = omdb_data.get("imdbID")
+        if omdb_imdb_id:
+            imdb_id = omdb_imdb_id
+
     # Ratings y score
     imdb_rating, imdb_votes, rt_score = extract_ratings_from_omdb(omdb_data)
 
-    # Decisión KEEP/MAYBE/DELETE/UNKNOWN
-    decision, reason = decide_action(imdb_rating, imdb_votes, rt_score)
+    # Decisión KEEP/MAYBE/DELETE/UNKNOWN (usando también el año para votos dinámicos)
+    decision, reason = decide_action(imdb_rating, imdb_votes, rt_score, year)
 
     # Posible misidentificación
     misidentified_hint = detect_misidentified(
