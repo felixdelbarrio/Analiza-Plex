@@ -1,8 +1,9 @@
+# backend/analyzer.py
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
-from backend.metadata_fix import generate_metadata_suggestions_row
 from backend.decision_logic import detect_misidentified
+from backend.metadata_fix import generate_metadata_suggestions_row
 from backend.omdb_client import (
     extract_ratings_from_omdb,
     search_omdb_by_imdb_id,
@@ -14,6 +15,7 @@ from backend.plex_client import (
     get_movie_file_info,
 )
 from backend.scoring import decide_action
+from backend.wiki_client import find_movie_in_wikidata
 
 
 def analyze_single_movie(
@@ -38,11 +40,36 @@ def analyze_single_movie(
     # Info de archivo
     file_path, file_size = get_movie_file_info(movie)
 
-    # ID IMDb inicial (intentando aprovechar todos los GUIDs de Plex)
+    # ----------------------------------------------------
+    # 1) ID IMDb inicial (Plex: todos los GUID posibles)
+    # ----------------------------------------------------
     imdb_id = get_imdb_id_from_movie(movie)
 
     # ----------------------------------------------------
-    # Búsqueda OMDb
+    # 2) Si Plex no trae imdb_id, intentamos Wikipedia/Wikidata
+    # ----------------------------------------------------
+    wiki_info: Optional[Dict[str, Any]] = None
+
+    if not imdb_id:
+        search_title = get_best_search_title(movie)
+        wiki_info = find_movie_in_wikidata(search_title, year, language="en")
+
+        if wiki_info and wiki_info.get("imdb_id"):
+            imdb_id = wiki_info["imdb_id"]
+            logs.append(
+                f"[WIKI] IMDb ID obtenido vía Wikidata para "
+                f"'{search_title}' ({year}): {imdb_id} "
+                f"(wikidata_id={wiki_info.get('wikidata_id')}, "
+                f"wikipedia_title='{wiki_info.get('wikipedia_title')}')"
+            )
+        elif wiki_info:
+            logs.append(
+                f"[WIKI] Encontrada página en Wikipedia/Wikidata para "
+                f"'{search_title}' ({year}), pero sin imdb_id (wikidata_id={wiki_info.get('wikidata_id')})"
+            )
+
+    # ----------------------------------------------------
+    # 3) Búsqueda OMDb (priorizando IMDb ID si lo tenemos)
     # ----------------------------------------------------
     if imdb_id:
         omdb_data = search_omdb_by_imdb_id(imdb_id)
@@ -50,15 +77,18 @@ def analyze_single_movie(
         search_title = get_best_search_title(movie)
         omdb_data = search_omdb_with_candidates(search_title, year)
 
-    # Si Plex no traía imdb_id o traía algo no estándar, pero OMDb sí lo tiene,
-    # lo aprovechamos SIEMPRE para rellenar / corregir el campo imdb_id.
+    # Si OMDb tiene imdbID y difiere / falta, lo usamos para rellenar/corregir.
     if omdb_data:
         omdb_imdb_id = omdb_data.get("imdbID")
-        if omdb_imdb_id:
+        if omdb_imdb_id and omdb_imdb_id != imdb_id:
+            logs.append(
+                f"[OMDB] imdbID corregido/rellenado desde OMDb: "
+                f"{imdb_id} -> {omdb_imdb_id}"
+            )
             imdb_id = omdb_imdb_id
 
     # ----------------------------------------------------
-    # Ratings y scoring
+    # 4) Ratings y scoring
     # ----------------------------------------------------
     imdb_rating, imdb_votes, rt_score = extract_ratings_from_omdb(omdb_data)
 
@@ -66,7 +96,7 @@ def analyze_single_movie(
     decision, reason = decide_action(imdb_rating, imdb_votes, rt_score, year)
 
     # ----------------------------------------------------
-    # Posible misidentificación
+    # 5) Posible misidentificación
     # ----------------------------------------------------
     misidentified_hint = detect_misidentified(
         title, year, omdb_data, imdb_rating, imdb_votes, rt_score
@@ -77,7 +107,7 @@ def analyze_single_movie(
         )
 
     # ----------------------------------------------------
-    # Sugerencias de metadata
+    # 6) Sugerencias de metadata
     # ----------------------------------------------------
     meta_sugg = generate_metadata_suggestions_row(movie, omdb_data)
     if meta_sugg:
@@ -87,13 +117,17 @@ def analyze_single_movie(
         )
 
     # ----------------------------------------------------
-    # Extras OMDb (poster y trailer si existiera)
+    # 7) Extras OMDb (poster y trailer si existiera)
     # ----------------------------------------------------
     poster_url = None
     trailer_url = None
     if omdb_data:
         poster_url = omdb_data.get("Poster")
+        # Si en el futuro quisieras trailer_url de otro sitio, se rellenaría aquí.
 
+    # ----------------------------------------------------
+    # 8) Construcción de la fila para *_all.csv
+    # ----------------------------------------------------
     row: Dict[str, Any] = {
         "library": library,
         "title": title,
@@ -114,6 +148,10 @@ def analyze_single_movie(
         "trailer_url": trailer_url,
         "thumb": thumb,
         "omdb_json": json.dumps(omdb_data, ensure_ascii=False) if omdb_data else None,
+        # Campos opcionales de depuración sobre Wikipedia/Wikidata
+        "wiki_imdb_id": wiki_info.get("imdb_id") if wiki_info else None,
+        "wikidata_id": wiki_info.get("wikidata_id") if wiki_info else None,
+        "wikipedia_title": wiki_info.get("wikipedia_title") if wiki_info else None,
     }
 
     return row, meta_sugg, logs

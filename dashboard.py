@@ -1,9 +1,9 @@
 import os
 import warnings
 
-from dotenv import load_dotenv
 import pandas as pd
 import streamlit as st
+from dotenv import load_dotenv
 
 from backend.report_loader import load_reports
 from backend.summary import compute_summary
@@ -88,10 +88,46 @@ st.subheader("Resumen general")
 
 summary = compute_summary(df_all)
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Películas", format_count_size(summary["total_count"], summary["total_size_gb"]))
-col2.metric("KEEP", format_count_size(summary["keep_count"], summary["keep_size_gb"]))
-col3.metric("DELETE/MAYBE", format_count_size(summary["dm_count"], summary["dm_size_gb"]))
+# 5 métricas: Total, KEEP, DELETE, MAYBE, IMDb medio catálogo analizado
+col1, col2, col3, col4, col5 = st.columns(5)
+
+col1.metric(
+    "Películas",
+    format_count_size(summary["total_count"], summary["total_size_gb"]),
+)
+col2.metric(
+    "KEEP",
+    format_count_size(summary["keep_count"], summary["keep_size_gb"]),
+)
+col3.metric(
+    "DELETE",
+    format_count_size(
+        summary.get("delete_count", 0),
+        summary.get("delete_size_gb"),
+    ),
+)
+col4.metric(
+    "MAYBE",
+    format_count_size(
+        summary.get("maybe_count", 0),
+        summary.get("maybe_size_gb"),
+    ),
+)
+
+# Medias IMDb
+imdb_mean_df = summary.get("imdb_mean_df")
+imdb_mean_cache = summary.get("imdb_mean_cache")
+
+if imdb_mean_df is not None and not pd.isna(imdb_mean_df):
+    col5.metric("IMDb medio (analizado)", f"{imdb_mean_df:.2f}")
+else:
+    col5.metric("IMDb medio (analizado)", "N/A")
+
+# Caption con la media global basada en omdb_cache / bayes
+if imdb_mean_cache is not None and not pd.isna(imdb_mean_cache):
+    st.caption(
+        f"IMDb medio global (omdb_cache / bayes): **{imdb_mean_cache:.2f}**"
+    )
 
 st.markdown("---")
 
@@ -99,7 +135,14 @@ st.markdown("---")
 # Pestañas
 # ----------------------------------------------------
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-    ["📚 Todas", "⚠️ Candidatas", "🔎 Búsqueda avanzada", "🧹 Borrado", "📊 Gráficos", "🧠 Metadata"]
+    [
+        "📚 Todas",
+        "⚠️ Candidatas",
+        "🔎 Búsqueda avanzada",
+        "🧹 Borrado",
+        "📊 Gráficos",
+        "🧠 Metadata",
+    ]
 )
 
 with tab1:

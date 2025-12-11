@@ -1,3 +1,4 @@
+# backend/config.py
 import os
 
 from dotenv import load_dotenv
@@ -27,12 +28,12 @@ IMDB_KEEP_MIN_RATING_WITH_RT = float(
 RT_KEEP_MIN_SCORE = int(os.getenv("RT_KEEP_MIN_SCORE", "75"))
 
 # ---- DELETE thresholds ----
-RT_DELETE_MAX_SCORE = int(os.getenv("RT_DELETE_MAX_SCORE", "50"))
+IMDB_DELETE_MAX_RATING = float(os.getenv("IMDB_DELETE_MAX_RATING", "6.0"))
 IMDB_DELETE_MAX_VOTES = int(os.getenv("IMDB_DELETE_MAX_VOTES", "5000"))
 IMDB_DELETE_MAX_VOTES_NO_RT = int(
     os.getenv("IMDB_DELETE_MAX_VOTES_NO_RT", "2000")
 )
-IMDB_DELETE_MAX_RATING = float(os.getenv("IMDB_DELETE_MAX_RATING", "6.0"))
+RT_DELETE_MAX_SCORE = int(os.getenv("RT_DELETE_MAX_SCORE", "50"))
 
 # ---- UNKNOWN thresholds ----
 IMDB_MIN_VOTES_FOR_KNOWN = int(os.getenv("IMDB_MIN_VOTES_FOR_KNOWN", "1000"))
@@ -43,6 +44,22 @@ IMDB_RATING_LOW_THRESHOLD = float(
 )
 RT_RATING_LOW_THRESHOLD = int(
     os.getenv("RT_RATING_LOW_THRESHOLD", "20")
+)
+
+# ----------------------------------------------------
+# Auto-umbrales de rating desde omdb_cache
+#   (se usan en backend.stats para calcular KEEP/DELETE
+#    dinámicos; si no hay suficientes títulos válidos,
+#    se cae en IMDB_KEEP_MIN_RATING / IMDB_DELETE_MAX_RATING)
+# ----------------------------------------------------
+AUTO_KEEP_RATING_PERCENTILE = float(
+    os.getenv("AUTO_KEEP_RATING_PERCENTILE", "0.70")  # KEEP = top 30%
+)
+AUTO_DELETE_RATING_PERCENTILE = float(
+    os.getenv("AUTO_DELETE_RATING_PERCENTILE", "0.30")  # DELETE = bottom 30%
+)
+RATING_MIN_TITLES_FOR_AUTO = int(
+    os.getenv("RATING_MIN_TITLES_FOR_AUTO", "300")
 )
 
 # ----------------------------------------------------
@@ -126,17 +143,16 @@ def get_votes_threshold_for_year(year: int | None) -> int:
 
 
 # ----------------------------------------------------
-# Parámetros para robustecer el delete scoring
-# mediante un cálculo bayesiano
+# Parámetros para el scoring bayesiano global
 # ----------------------------------------------------
-ENABLE_BAYESIAN_SCORING = (
-    os.getenv("ENABLE_BAYESIAN_SCORING", "false").lower() == "true"
-)
 BAYES_GLOBAL_MEAN_DEFAULT = float(
     os.getenv("BAYES_GLOBAL_MEAN_DEFAULT", "6.8")
 )
 BAYES_DELETE_MAX_SCORE = float(
     os.getenv("BAYES_DELETE_MAX_SCORE", "5.8")
+)
+BAYES_MIN_TITLES_FOR_GLOBAL_MEAN = int(
+    os.getenv("BAYES_MIN_TITLES_FOR_GLOBAL_MEAN", "200")
 )
 
 # ----------------------------------------------------
