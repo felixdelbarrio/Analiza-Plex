@@ -1,6 +1,11 @@
 import csv
 import json
+import os
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, List
+
+from backend import logger as _logger
 
 
 def write_all_csv(path: str, rows: List[Dict[str, Any]]) -> None:
@@ -8,15 +13,24 @@ def write_all_csv(path: str, rows: List[Dict[str, Any]]) -> None:
     Escribe el CSV completo con todas las películas analizadas.
     """
     if not rows:
-        print("No hay filas para escribir en report_all.csv")
+        _logger.info("No hay filas para escribir en report_all.csv")
         return
 
     fieldnames = list(rows[0].keys())
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-    print(f"CSV completo escrito en {path}")
+    # Escritura atómica
+    pathp = Path(path)
+    dirpath = pathp.parent
+    dirpath.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath), newline="") as tf:
+            writer = csv.DictWriter(tf, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+            temp_name = tf.name
+        os.replace(temp_name, str(pathp))
+        _logger.info(f"CSV completo escrito en {path}")
+    except Exception as e:
+        _logger.error(f"Error escribiendo CSV completo en {path}: {e}")
 
 
 def write_filtered_csv(path: str, rows: List[Dict[str, Any]]) -> None:
@@ -24,15 +38,23 @@ def write_filtered_csv(path: str, rows: List[Dict[str, Any]]) -> None:
     Escribe el CSV filtrado con DELETE/MAYBE.
     """
     if not rows:
-        print("No hay filas filtradas para escribir en report_filtered.csv")
+        _logger.info("No hay filas filtradas para escribir en report_filtered.csv")
         return
 
     fieldnames = list(rows[0].keys())
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-    print(f"CSV filtrado escrito en {path}")
+    pathp = Path(path)
+    dirpath = pathp.parent
+    dirpath.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath), newline="") as tf:
+            writer = csv.DictWriter(tf, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+            temp_name = tf.name
+        os.replace(temp_name, str(pathp))
+        _logger.info(f"CSV filtrado escrito en {path}")
+    except Exception as e:
+        _logger.error(f"Error escribiendo CSV filtrado en {path}: {e}")
 
 
 def write_suggestions_csv(path: str, rows: List[Dict[str, Any]]) -> None:
@@ -58,18 +80,24 @@ def write_suggestions_csv(path: str, rows: List[Dict[str, Any]]) -> None:
         fieldnames = list(rows[0].keys())
     else:
         fieldnames = standard_fieldnames
-        print(
-            "No hay sugerencias de metadata para escribir. "
-            "Se crea un CSV vacío con solo cabeceras."
+        _logger.info(
+            "No hay sugerencias de metadata para escribir. Se crea un CSV vacío con solo cabeceras."
         )
 
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        if rows:
-            writer.writerows(rows)
-
-    print(f"Sugerencias de metadata escritas en {path}")
+    pathp = Path(path)
+    dirpath = pathp.parent
+    dirpath.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath), newline="") as tf:
+            writer = csv.DictWriter(tf, fieldnames=fieldnames)
+            writer.writeheader()
+            if rows:
+                writer.writerows(rows)
+            temp_name = tf.name
+        os.replace(temp_name, str(pathp))
+        _logger.info(f"Sugerencias de metadata escritas en {path}")
+    except Exception as e:
+        _logger.error(f"Error escribiendo sugerencias de metadata en {path}: {e}")
 
 
 def write_interactive_html(path: str, rows: List[Dict[str, Any]]) -> None:
@@ -84,7 +112,7 @@ def write_interactive_html(path: str, rows: List[Dict[str, Any]]) -> None:
     """
     # Preparamos las filas que se pasarán al JS.
     # Seleccionamos un subconjunto de campos relevantes.
-    processed_rows = []
+    processed_rows: List[Dict[str, Any]] = []
     for r in rows:
         processed_rows.append(
             {
@@ -104,8 +132,8 @@ def write_interactive_html(path: str, rows: List[Dict[str, Any]]) -> None:
 
     rows_json = json.dumps(processed_rows, ensure_ascii=False)
 
-    # Plantilla HTML (similar a la versión anterior).
-    html = f"""<!DOCTYPE html>
+    # Plantilla HTML con placeholder para rows_json — evita f-strings y conflictos
+    html_template = """<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
@@ -118,99 +146,99 @@ def write_interactive_html(path: str, rows: List[Dict[str, Any]]) -> None:
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
-body {{
+body {
     font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     margin: 1.5rem;
     background: #0b1120;
     color: #e5e7eb;
-}}
+}
 
-h1 {{
+h1 {
     margin-bottom: 0.25rem;
-}}
+}
 
-.subtitle {{
+.subtitle {
     color: #9ca3af;
     margin-bottom: 1.5rem;
-}}
+}
 
-.container {{
+.container {
     display: grid;
     grid-template-columns: 2fr 1fr;
     gap: 1.5rem;
-}}
+}
 
-table.dataTable thead th {{
+table.dataTable thead th {
     background-color: #111827;
     color: #e5e7eb;
-}}
+}
 
-table.dataTable tbody tr {{
+table.dataTable tbody tr {
     background-color: #020617;
     color: #e5e7eb;
-}}
+}
 
-.tag-KEEP {{
+.tag-KEEP {
     background-color: #166534;
     color: #dcfce7;
     padding: 0.15rem 0.4rem;
     border-radius: 999px;
     font-size: 0.75rem;
-}}
+}
 
-.tag-DELETE {{
+.tag-DELETE {
     background-color: #7f1d1d;
     color: #fee2e2;
     padding: 0.15rem 0.4rem;
     border-radius: 999px;
     font-size: 0.75rem;
-}}
+}
 
-.tag-MAYBE {{
+.tag-MAYBE {
     background-color: #92400e;
     color: #ffedd5;
     padding: 0.15rem 0.4rem;
     border-radius: 999px;
     font-size: 0.75rem;
-}}
+}
 
-.tag-UNKNOWN {{
+.tag-UNKNOWN {
     background-color: #374151;
     color: #e5e7eb;
     padding: 0.15rem 0.4rem;
     border-radius: 999px;
     font-size: 0.75rem;
-}}
+}
 
-.poster-img {{
+.poster-img {
     width: 50px;
     height: auto;
     border-radius: 0.25rem;
     object-fit: cover;
-}}
+}
 
-.badge {{
+.badge {
     display: inline-flex;
     padding: 0.1rem 0.4rem;
     border-radius: 999px;
     font-size: 0.7rem;
     background-color: #1f2937;
     color: #e5e7eb;
-}}
+}
 
-.charts {{
+.charts {
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
-}}
+}
 
-.chart-card {{
+.chart-card {
     background-color: #020617;
     border-radius: 0.75rem;
     padding: 1rem;
     box-shadow: 0 10px 25px rgba(0,0,0,0.6);
     border: 1px solid #1f2937;
-}}
+}
 </style>
 </head>
 <body>
@@ -254,15 +282,15 @@ table.dataTable tbody tr {{
 
 <script>
 // Datos generados por Python
-const rows = {rows_json};
+const rows = __ROWS_JSON__;
 
 // Construcción de tabla
-const tableData = rows.map(r => {{
+const tableData = rows.map(r => {
   const poster = r.poster_url
-    ? `<img src="${{r.poster_url}}" class="poster-img" loading="lazy">`
+    ? `<img src="${r.poster_url}" class="poster-img" loading="lazy">`
     : "";
 
-  const decisionClass = r.decision ? `tag-${{r.decision}}` : "tag-UNKNOWN";
+  const decisionClass = r.decision ? `tag-${r.decision}` : "tag-UNKNOWN";
   const decisionLabel = r.decision || "UNKNOWN";
 
   return [
@@ -270,98 +298,108 @@ const tableData = rows.map(r => {{
     r.library || "",
     r.title || "",
     r.year || "",
-    r.imdb_rating != null ? r.imdb_rating.toFixed ? r.imdb_rating.toFixed(1) : r.imdb_rating : "",
+    r.imdb_rating != null ? (typeof r.imdb_rating.toFixed === 'function' ? r.imdb_rating.toFixed(1) : r.imdb_rating) : "",
     r.rt_score != null ? r.rt_score + "%" : "",
     r.imdb_votes != null ? r.imdb_votes.toLocaleString() : "",
-    `<span class="${{decisionClass}}">${{decisionLabel}}</span>`,
+    `<span class="${decisionClass}">${decisionLabel}</span>`,
     r.reason || "",
     r.misidentified_hint || "",
     r.file || "",
   ];
-}});
+});
 
-$(document).ready(function() {{
-  $('#movies').DataTable({{
+$(document).ready(function() {
+  $('#movies').DataTable({
     data: tableData,
     pageLength: 25,
     order: [[4, 'asc']], // por IMDb ascendente (peores primero)
-  }});
-}});
+  });
+});
 
 // Gráfico de decisiones
-(function() {{
-  const counts = {{}};
-  for (const r of rows) {{
+(function() {
+  const counts = {};
+  for (const r of rows) {
     const d = r.decision || "UNKNOWN";
     counts[d] = (counts[d] || 0) + 1;
-  }}
+  }
   const labels = Object.keys(counts);
   const values = labels.map(k => counts[k]);
 
   const ctx = document.getElementById('decisionChart').getContext('2d');
-  new Chart(ctx, {{
+  new Chart(ctx, {
     type: 'bar',
-    data: {{
+    data: {
       labels,
-      datasets: [{{
+      datasets: [{
         label: 'Número de películas',
         data: values,
-      }}],
-    }},
-    options: {{
+      }],
+    },
+    options: {
       responsive: true,
-      plugins: {{
-        legend: {{ display: false }},
-      }},
-      scales: {{
-        x: {{ ticks: {{ color: '#e5e7eb' }} }},
-        y: {{ ticks: {{ color: '#e5e7eb' }} }},
-      }},
-    }},
-  }});
-}})();
+      plugins: {
+        legend: { display: false },
+      },
+      scales: {
+        x: { ticks: { color: '#e5e7eb' } },
+        y: { ticks: { color: '#e5e7eb' } },
+      },
+    },
+  });
+})();
 
 // Gráfico por biblioteca (top 10)
-(function() {{
-  const counts = {{}};
-  for (const r of rows) {{
+(function() {
+  const counts = {};
+  for (const r of rows) {
     const lib = r.library || 'Unknown';
     counts[lib] = (counts[lib] || 0) + 1;
-  }}
+  }
   const entries = Object.entries(counts).sort((a,b) => b[1] - a[1]).slice(0, 10);
   const labels = entries.map(e => e[0]);
   const values = entries.map(e => e[1]);
 
   const ctx = document.getElementById('libraryChart').getContext('2d');
-  new Chart(ctx, {{
+  new Chart(ctx, {
     type: 'bar',
-    data: {{
+    data: {
       labels,
-      datasets: [{{
+      datasets: [{
         label: 'Películas',
         data: values,
-      }}],
-    }},
-    options: {{
+      }],
+    },
+    options: {
       indexAxis: 'y',
       responsive: true,
-      plugins: {{
-        legend: {{ display: false }},
-      }},
-      scales: {{
-        x: {{ ticks: {{ color: '#e5e7eb' }} }},
-        y: {{ ticks: {{ color: '#e5e7eb' }} }},
-      }},
-    }},
-  }});
-}})();
+      plugins: {
+        legend: { display: false },
+      },
+      scales: {
+        x: { ticks: { color: '#e5e7eb' } },
+        y: { ticks: { color: '#e5e7eb' } },
+      },
+    },
+  });
+})();
 </script>
 
 </body>
 </html>
 """
 
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(html)
+    # Reemplazamos el placeholder por el JSON serializado (sin usar f-strings)
+    html = html_template.replace("__ROWS_JSON__", rows_json)
 
-    print(f"Informe HTML interactivo escrito en {path}")
+    pathp = Path(path)
+    dirpath = pathp.parent
+    dirpath.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath)) as tf:
+            tf.write(html)
+            temp_name = tf.name
+        os.replace(temp_name, str(pathp))
+        _logger.info(f"Informe HTML interactivo escrito en {path}")
+    except Exception as e:
+        _logger.error(f"Error escribiendo informe HTML en {path}: {e}")
