@@ -2,9 +2,13 @@
 import os
 import json
 import time
+import tempfile
+from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from backend.config import (
     OMDB_API_KEY,
@@ -13,6 +17,7 @@ from backend.config import (
     OMDB_RETRY_EMPTY_CACHE,
     SILENT_MODE,
 )
+from backend import logger as _logger
 
 # ============================================================
 #                  LOGGING CONTROLADO POR SILENT_MODE
@@ -20,22 +25,43 @@ from backend.config import (
 
 
 def _log(msg: str) -> None:
-    """
-    Log normal para este módulo.
-    - Si SILENT_MODE = True: no imprime nada.
-    - Si SILENT_MODE = False: imprime por consola.
-    """
-    if SILENT_MODE:
-        return
-    print(msg)
+    """Logea vía logger central respetando SILENT_MODE."""
+    try:
+        _logger.info(str(msg))
+    except Exception:
+        if not SILENT_MODE:
+            print(msg)
 
 
 def _log_always(msg: str) -> None:
-    """
-    Log que SIEMPRE se imprime, independientemente de SILENT_MODE.
-    Lo usamos para mensajes críticos (ej: límite gratuito de OMDb).
-    """
-    print(msg)
+    """Log crítico que siempre se muestra (usa logger.warning with always)."""
+    try:
+        _logger.warning(str(msg), always=True)
+    except Exception:
+        print(msg)
+
+
+# HTTP session con reintentos
+_SESSION: Optional[requests.Session] = None
+
+
+def _get_session() -> requests.Session:
+    global _SESSION
+    if _SESSION is not None:
+        return _SESSION
+    session = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET", "POST"),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    _SESSION = session
+    return _SESSION
 
 
 # ============================================================
@@ -115,6 +141,7 @@ def extract_year_from_omdb(omdb_data: Dict[str, Any]) -> Optional[int]:
 # ============================================================
 
 CACHE_FILE = "omdb_cache.json"
+CACHE_PATH = Path(CACHE_FILE)
 
 
 def load_cache() -> Dict[str, Any]:
@@ -122,13 +149,21 @@ def load_cache() -> Dict[str, Any]:
     Carga la caché de OMDb desde disco y mantiene compatibilidad
     con el formato antiguo.
     """
-    if not os.path.exists(CACHE_FILE):
+    if not CACHE_PATH.exists():
         return {}
 
     try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+        with CACHE_PATH.open("r", encoding="utf-8") as f:
             raw_cache = json.load(f)
-    except Exception:
+    except Exception as e:
+        _log(f"WARNING: error cargando {CACHE_PATH}: {e}")
+        # Intentar renombrar el archivo corrupto para preservar datos
+        try:
+            broken = CACHE_PATH.with_suffix(".broken.json")
+            CACHE_PATH.replace(broken)
+            _log(f"INFO: archivo de cache corrupto renombrado a {broken}")
+        except Exception:
+            pass
         return {}
 
     if not isinstance(raw_cache, dict):
@@ -174,8 +209,16 @@ def load_cache() -> Dict[str, Any]:
 
 
 def save_cache(cache: Dict[str, Any]) -> None:
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, indent=2, ensure_ascii=False)
+    """Escribe la cache de forma atómica en CACHE_PATH."""
+    dirpath = CACHE_PATH.parent
+    dirpath.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath)) as tf:
+            json.dump(cache, tf, indent=2, ensure_ascii=False)
+            temp_name = tf.name
+        os.replace(temp_name, str(CACHE_PATH))
+    except Exception as e:
+        _log(f"ERROR guardando cache OMDb en {CACHE_PATH}: {e}")
 
 
 omdb_cache = load_cache()
@@ -244,20 +287,27 @@ def omdb_request(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     params["apikey"] = OMDB_API_KEY
 
     try:
-        resp = requests.get(base_url, params=params, timeout=10)
+        session = _get_session()
+        resp = session.get(base_url, params=params, timeout=10)
     except Exception as e:
         _log(f"WARNING: error al conectar con OMDb: {e}")
         return None
 
+    # Comprobar código HTTP
+    if resp.status_code != 200:
+        _log(f"WARNING: OMDb devolvió status {resp.status_code}")
+        return None
+
     try:
         data_obj = resp.json()
-        if isinstance(data_obj, dict):
-            return data_obj
-        _log("WARNING: OMDb devolvió JSON no dict.")
-        return None
     except Exception as e:
         _log(f"WARNING: OMDb no devolvió JSON válido: {e}")
         return None
+
+    if isinstance(data_obj, dict):
+        return data_obj
+    _log("WARNING: OMDb devolvió JSON no dict.")
+    return None
 
 
 def omdb_query_with_cache(cache_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -419,7 +469,8 @@ def search_omdb_with_candidates(
     params = {"apikey": OMDB_API_KEY, "s": title, "type": "movie"}
 
     try:
-        resp = requests.get(base_url, params=params, timeout=10)
+        session = _get_session()
+        resp = session.get(base_url, params=params, timeout=10)
         data_s = resp.json() if resp.status_code == 200 else None
     except Exception:
         data_s = None

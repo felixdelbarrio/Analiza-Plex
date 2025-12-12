@@ -1,8 +1,9 @@
-import os
+from pathlib import Path
 from typing import Optional, Tuple
 
 import pandas as pd
 
+from backend import logger as _logger
 from frontend.data_utils import add_derived_columns
 
 
@@ -10,8 +11,8 @@ TEXT_COLUMNS = ["poster_url", "trailer_url", "omdb_json"]
 
 
 def _clean_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Elimina columnas no necesarias para el dashboard.
+    """Elimina columnas no necesarias para el dashboard.
+
     Actualmente solo se elimina 'thumb' si existe.
     """
     cols = [c for c in df.columns if c != "thumb"]
@@ -19,49 +20,54 @@ def _clean_base_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _cast_text_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Asegura que ciertas columnas se traten como texto (str),
-    evitando problemas al mostrarlas en el dashboard.
-    """
+    """Asegura que ciertas columnas se traten como texto (str)."""
     df = df.copy()
     for col in TEXT_COLUMNS:
         if col in df.columns:
+            # Forzar tipo string, evitando None/NaN problemáticos en el frontend
             df[col] = df[col].astype(str)
     return df
 
 
 def load_reports(
     all_csv_path: str,
-    filtered_csv_path: str,
+    filtered_csv_path: Optional[str],
 ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
-    """
-    Carga y prepara los DataFrames usados por el dashboard.
+    """Carga y prepara los DataFrames usados por el dashboard.
 
-    - Lee el CSV completo (all_csv_path).
-    - Si existe filtered_csv_path, lo carga también.
-    - Hace:
-        * cast de columnas de texto (poster_url, trailer_url, omdb_json)
-        * columnas derivadas (add_derived_columns)
-        * limpieza de columnas (elimina 'thumb')
+    Parámetros:
+      - all_csv_path: ruta al CSV completo (requerido)
+      - filtered_csv_path: ruta al CSV filtrado (opcional)
 
-    Devuelve:
-      - df_all: DataFrame completo preparado.
-      - df_filtered: DataFrame filtrado preparado o None si no existe el CSV.
+    Returns:
+      - df_all, df_filtered (df_filtered puede ser None)
     """
-    if not os.path.exists(all_csv_path):
+    all_path = Path(all_csv_path)
+    if not all_path.exists():
         raise FileNotFoundError(f"No se encontró el CSV completo: {all_csv_path}")
 
-    # Carga del CSV completo
-    df_all = pd.read_csv(all_csv_path)
+    try:
+        # Leer forzando texto en las columnas conocidas para evitar conversiones extrañas
+        dtype_map = {c: str for c in TEXT_COLUMNS}
+        df_all = pd.read_csv(all_path, dtype=dtype_map, encoding="utf-8")
+    except Exception as e:
+        _logger.error(f"Error leyendo {all_path}: {e}")
+        raise
+
     df_all = _cast_text_columns(df_all)
     df_all = add_derived_columns(df_all)
     df_all = _clean_base_dataframe(df_all)
 
-    # Carga del CSV filtrado (opcional)
-    if os.path.exists(filtered_csv_path):
-        df_filtered = pd.read_csv(filtered_csv_path)
-        df_filtered = _clean_base_dataframe(df_filtered)
-    else:
-        df_filtered = None
+    df_filtered = None
+    if filtered_csv_path:
+        filtered_path = Path(filtered_csv_path)
+        if filtered_path.exists():
+            try:
+                df_filtered = pd.read_csv(filtered_path, dtype={c: str for c in TEXT_COLUMNS}, encoding="utf-8")
+                df_filtered = _clean_base_dataframe(df_filtered)
+            except Exception as e:
+                _logger.error(f"Error leyendo {filtered_path}: {e}")
+                # No lanzamos para permitir que el dashboard use df_all sólo
+                df_filtered = None
 
     return df_all, df_filtered

@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import requests
+import os
+import tempfile
+
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from backend.config import OMDB_RETRY_EMPTY_CACHE, SILENT_MODE
 from backend.omdb_client import (
@@ -14,6 +19,7 @@ from backend.omdb_client import (
     omdb_cache,
     is_omdb_data_empty_for_ratings,
 )
+from backend import logger as _logger
 
 # --------------------------------------------------------------------
 # Fichero de caché maestro (wiki + omdb fusionado)
@@ -60,10 +66,41 @@ def _log_wiki(msg: str) -> None:
     """
     Log interno de wiki_client controlado por SILENT_MODE.
     """
-    if SILENT_MODE:
-        return
     prefix = _progress_prefix()
-    print(prefix + msg)
+    # Use centralized logger which respects SILENT_MODE
+    try:
+        _logger.info(prefix + msg)
+    except Exception:
+        # Fallback to print if logger fails for any reason
+        if not SILENT_MODE:
+            print(prefix + msg)
+
+
+# --------------------------------------------------------------------
+# HTTP session with retries
+# --------------------------------------------------------------------
+_SESSION: Optional[requests.Session] = None
+
+
+def _get_session() -> requests.Session:
+    """Return a cached requests.Session configured with retries/backoff."""
+    global _SESSION
+    if _SESSION is not None:
+        return _SESSION
+
+    session = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET", "POST"),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    _SESSION = session
+    return _SESSION
 
 
 # --------------------------------------------------------------------
@@ -79,7 +116,15 @@ def _load_wiki_cache() -> None:
                 _wiki_cache = json.load(f)
             _log_wiki(f"[WIKI] wiki_cache cargada ({len(_wiki_cache)} entradas)")
         except Exception as e:
-            _log_wiki(f"[WIKI] Error cargando wiki_cache.json: {e}")
+            _logger.warning(f"[WIKI] Error cargando wiki_cache.json: {e}")
+            # Try to preserve the broken file before resetting cache
+            try:
+                broken = WIKI_CACHE_PATH.with_suffix(".broken.json")
+                WIKI_CACHE_PATH.replace(broken)
+                _logger.warning(f"[WIKI] Archivo corrupto renombrado a {broken}")
+            except Exception:
+                # best-effort, ignore
+                pass
             _wiki_cache = {}
     else:
         _wiki_cache = {}
@@ -90,10 +135,15 @@ def _save_wiki_cache() -> None:
     if not _wiki_cache_loaded:
         return
     try:
-        with WIKI_CACHE_PATH.open("w", encoding="utf-8") as f:
-            json.dump(_wiki_cache, f, ensure_ascii=False, indent=2)
+        # Write atomically to avoid corrupting cache on crash
+        dirpath = WIKI_CACHE_PATH.parent
+        dirpath.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath)) as tf:
+            json.dump(_wiki_cache, tf, ensure_ascii=False, indent=2)
+            temp_name = tf.name
+        os.replace(temp_name, str(WIKI_CACHE_PATH))
     except Exception as e:
-        _log_wiki(f"[WIKI] Error guardando wiki_cache.json: {e}")
+        _logger.error(f"[WIKI] Error guardando wiki_cache.json: {e}")
 
 
 def _normalize_title(title: str) -> str:
@@ -110,7 +160,8 @@ WIKIPEDIA_API_TEMPLATE = "https://{lang}.wikipedia.org/w/api.php"
 
 def _wikidata_get_entity(wikidata_id: str) -> Optional[Dict[str, Any]]:
     try:
-        resp = requests.get(
+        session = _get_session()
+        resp = session.get(
             WIKIDATA_API,
             params={
                 "action": "wbgetentities",
@@ -140,7 +191,8 @@ def _wikidata_search_by_imdb(imdb_id: str) -> Optional[Tuple[str, Dict[str, Any]
     """
 
     try:
-        resp = requests.get(
+        session = _get_session()
+        resp = session.get(
             WIKIDATA_SPARQL,
             params={"query": query, "format": "json"},
             headers={"Accept": "application/sparql-results+json"},
@@ -174,7 +226,8 @@ def _wikidata_search_by_title(
     Filtra por tipo 'film' y comprueba fecha aproximada de publicación.
     """
     try:
-        resp = requests.get(
+        session = _get_session()
+        resp = session.get(
             WIKIDATA_API,
             params={
                 "action": "wbsearchentities",
