@@ -1,6 +1,15 @@
-# backend/decision_logic.py
-from typing import Optional, Dict, Any, List
+"""Lógica de heurística para detectar posibles películas mal identificadas.
 
+Funciones públicas:
+- detect_misidentified(...): devuelve una cadena con pistas ('' si no hay).
+- sort_filtered_rows(rows): ordena filas según reglas de prioridad.
+"""
+
+from typing import Optional, Dict, Any, List
+import difflib
+import re
+
+from backend import logger as _logger
 from backend.omdb_client import extract_year_from_omdb
 from backend.config import (
     IMDB_MIN_VOTES_FOR_KNOWN,
@@ -9,8 +18,21 @@ from backend.config import (
 )
 
 
+TITLE_SIMILARITY_THRESHOLD = 0.60
+
+
+def _normalize_title(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    # Lowercase, remove punctuation, collapse whitespace
+    s2 = s.lower()
+    s2 = re.sub(r"[^a-z0-9\s]", " ", s2)
+    s2 = re.sub(r"\s+", " ", s2).strip()
+    return s2
+
+
 def detect_misidentified(
-    plex_title: str,
+    plex_title: Optional[str],
     plex_year: Optional[int],
     omdb_data: Optional[Dict[str, Any]],
     imdb_rating: Optional[float],
@@ -35,23 +57,31 @@ def detect_misidentified(
     omdb_title = omdb_data.get("Title") or ""
     omdb_year = extract_year_from_omdb(omdb_data)
 
-    pt = (plex_title or "").strip().lower()
-    ot = (omdb_title or "").strip().lower()
+    pt = _normalize_title(plex_title)
+    ot = _normalize_title(omdb_title)
 
     # -----------------------------
     # 1) Títulos claramente distintos
     # -----------------------------
     if pt and ot:
-        # Versión rápida: no iguales y uno no contiene al otro
+        # Si uno contiene al otro, probablemente están relacionados
         if pt != ot and pt not in ot and ot not in pt:
-            hints.append(f"Title mismatch: Plex='{plex_title}' vs OMDb='{omdb_title}'")
+            # Comprobación de similaridad más suave
+            sim = difflib.SequenceMatcher(a=pt, b=ot).ratio()
+            if sim < TITLE_SIMILARITY_THRESHOLD:
+                hints.append(f"Title mismatch: Plex='{plex_title}' vs OMDb='{omdb_title}' (sim={sim:.2f})")
+                _logger.debug(f"Title similarity for '{plex_title}' vs '{omdb_title}': {sim:.2f}")
 
     # -----------------------------
     # 2) Años muy diferentes (> 1)
     # -----------------------------
-    if plex_year and omdb_year:
-        if abs(plex_year - omdb_year) > 1:
-            hints.append(f"Year mismatch: Plex={plex_year}, OMDb={omdb_year}")
+    try:
+        if plex_year is not None and omdb_year is not None:
+            if abs(int(plex_year) - int(omdb_year)) > 1:
+                hints.append(f"Year mismatch: Plex={plex_year}, OMDb={omdb_year}")
+    except Exception:
+        # Si la conversión falla, no añadimos hint pero lo logueamos
+        _logger.debug(f"Could not compare years: plex_year={plex_year}, omdb_year={omdb_year}")
 
     # -----------------------------
     # 3) IMDb muy baja con suficientes votos
