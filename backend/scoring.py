@@ -3,10 +3,14 @@ from typing import Any, Dict, Optional, Tuple
 
 from backend.config import (
     BAYES_DELETE_MAX_SCORE,
-    IMDB_DELETE_MAX_VOTES,
-    IMDB_DELETE_MAX_VOTES_NO_RT,
+    IMDB_DELETE_MAX_RATING,
+    IMDB_KEEP_MIN_RATING,
     IMDB_KEEP_MIN_RATING_WITH_RT,
+    IMDB_MIN_VOTES_FOR_KNOWN,
+    RT_DELETE_MAX_SCORE,
     RT_KEEP_MIN_SCORE,
+    METACRITIC_KEEP_MIN_SCORE,
+    METACRITIC_DELETE_MAX_SCORE,
     get_votes_threshold_for_year,
 )
 from backend.stats import (
@@ -28,7 +32,7 @@ def _compute_bayes_score(
       - R: imdb_rating
       - v: imdb_votes
       - m: número mínimo de votos (según antigüedad)
-      - C: media global (derivada de omdb_cache o BAYES_GLOBAL_MEAN_DEFAULT)
+      - C: media global (omdb_cache o BAYES_GLOBAL_MEAN_DEFAULT)
 
     Devuelve None si no se puede calcular.
     """
@@ -56,199 +60,273 @@ def compute_scoring(
     imdb_votes: Optional[int],
     rt_score: Optional[int],
     year: Optional[int] = None,
+    metacritic_score: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Calcula la decisión de KEEP / DELETE / MAYBE / UNKNOWN y devuelve
-    un objeto de scoring enriquecido que incluye:
+    un objeto de scoring enriquecido:
 
       - decision: str
       - reason: str
-      - rule: str   (identificador interno de la regla aplicada)
-      - inputs: dict con imdb_rating, imdb_votes, rt_score, year
+      - rule: str
+      - inputs: dict con imdb_rating, imdb_votes, rt_score, year, score_bayes...
 
-    Ajustes importantes:
-      - El número mínimo de votos exigidos para KEEP depende de la antigüedad
-        de la película (IMDB_VOTES_BY_YEAR).
-      - El umbral de rating para KEEP/DELETE se auto-ajusta desde omdb_cache
-        vía get_auto_keep_rating_threshold() / get_auto_delete_rating_threshold(),
-        con fallback a los valores de config si no hay datos suficientes.
-      - Se aplica un scoring bayesiano para DELETE comparando con BAYES_DELETE_MAX_SCORE.
-      - Hay una regla explícita de DELETE cuando el rating es bajo pero hay muchos votos.
+    Modelo:
+
+      1) El score bayesiano es la regla principal:
+         - score_bayes >= bayes_keep_thr   → KEEP_BAYES
+         - score_bayes <= bayes_delete_thr → DELETE_BAYES
+         - en medio                        → MAYBE_BAYES_MIDDLE
+
+      2) Rotten Tomatoes actúa como señal suave (público también):
+         - RT alta puede subir MAYBE→KEEP si no es un DELETE claro por bayes.
+         - RT muy baja refuerza DELETE o rompe empates cerca del umbral.
+
+      3) Metacritic (crítica especializada) SOLO refuerza:
+         - Si decisión=KEEP y Metacritic ≥ METACRITIC_KEEP_MIN_SCORE → se añade a la razón.
+         - Si decisión=DELETE y Metacritic ≤ METACRITIC_DELETE_MAX_SCORE → se añade a la razón.
+         - Nunca convierte una peli mala del público en KEEP.
+
+      4) Si no hay datos suficientes para bayes, se usan fallbacks por rating/votos.
     """
     inputs: Dict[str, Any] = {
         "imdb_rating": imdb_rating,
         "imdb_votes": imdb_votes,
         "rt_score": rt_score,
         "year": year,
+        "metacritic_score": metacritic_score,
     }
 
-    # Caso sin datos suficientes
+    # ----------------------------------------------------
+    # Caso sin datos suficientes de ningún tipo
+    # ----------------------------------------------------
     if imdb_rating is None and imdb_votes is None and rt_score is None:
         return {
             "decision": "UNKNOWN",
-            "reason": "Sin datos suficientes de OMDb",
+            "reason": "Sin datos suficientes de OMDb (IMDb y RT vacíos)",
             "rule": "NO_DATA",
             "inputs": inputs,
         }
 
-    # Umbrales dinámicos de rating (KEEP / DELETE) basados en estadísticas
-    keep_rating_threshold = get_auto_keep_rating_threshold()
-    delete_rating_threshold = get_auto_delete_rating_threshold()
+    # ----------------------------------------------------
+    # Umbrales efectivos para score bayesiano
+    # ----------------------------------------------------
+    bayes_keep_thr = get_auto_keep_rating_threshold()
+    bayes_delete_thr = get_auto_delete_rating_threshold()
+    bayes_delete_thr = min(bayes_delete_thr, BAYES_DELETE_MAX_SCORE)
 
     # ----------------------------------------------------
-    # Regla KEEP por IMDb (rating + votos dinámicos por año)
+    # Cálculo del score bayesiano (si es posible)
     # ----------------------------------------------------
+    bayes_score: Optional[float] = None
+    m_dynamic = get_votes_threshold_for_year(year)
+    c_global = get_global_imdb_mean_from_cache()
+
     if imdb_rating is not None and imdb_votes is not None:
-        dynamic_votes_needed = get_votes_threshold_for_year(year)
-
-        if (
-            dynamic_votes_needed > 0
-            and imdb_rating >= keep_rating_threshold
-            and imdb_votes >= dynamic_votes_needed
-        ):
-            return {
-                "decision": "KEEP",
-                "reason": (
-                    f"imdbRating={imdb_rating} ≥ umbral KEEP={keep_rating_threshold:.2f} "
-                    f"y imdbVotes={imdb_votes} ≥ mínimo dinámico {dynamic_votes_needed}"
-                ),
-                "rule": "KEEP_IMDB_DYNAMIC_VOTES",
-                "inputs": {
-                    **inputs,
-                    "keep_rating_threshold": keep_rating_threshold,
-                    "dynamic_votes_needed": dynamic_votes_needed,
-                },
-            }
-
-    # ----------------------------------------------------
-    # Regla KEEP por RT + IMDb
-    # ----------------------------------------------------
-    if rt_score is not None and imdb_rating is not None:
-        if rt_score >= RT_KEEP_MIN_SCORE and imdb_rating >= IMDB_KEEP_MIN_RATING_WITH_RT:
-            return {
-                "decision": "KEEP",
-                "reason": (
-                    f"RT={rt_score}% y imdbRating={imdb_rating} "
-                    f"cumplen umbrales KEEP (RT + IMDb)"
-                ),
-                "rule": "KEEP_RT_IMDB",
-                "inputs": inputs,
-            }
-
-    # ----------------------------------------------------
-    # Regla DELETE bayesiana (siempre activa)
-    # ----------------------------------------------------
-    if imdb_rating is not None and imdb_votes is not None:
-        m_dynamic = get_votes_threshold_for_year(year)
-        c_global = get_global_imdb_mean_from_cache()
-
         bayes_score = _compute_bayes_score(
             imdb_rating=imdb_rating,
             imdb_votes=imdb_votes,
             m=m_dynamic,
             c_global=c_global,
         )
+        inputs["score_bayes"] = bayes_score
+        inputs["m_dynamic"] = m_dynamic
+        inputs["c_global"] = c_global
+        inputs["bayes_keep_thr"] = bayes_keep_thr
+        inputs["bayes_delete_thr"] = bayes_delete_thr
 
-        if bayes_score is not None and bayes_score <= BAYES_DELETE_MAX_SCORE:
+    # ----------------------------------------------------
+    # 1) DECISIÓN PRINCIPAL: BAYES
+    # ----------------------------------------------------
+    preliminary_decision: Optional[str] = None
+    preliminary_rule: Optional[str] = None
+    preliminary_reason: Optional[str] = None
+
+    if bayes_score is not None:
+        if bayes_score >= bayes_keep_thr:
+            preliminary_decision = "KEEP"
+            preliminary_rule = "KEEP_BAYES"
+            preliminary_reason = (
+                f"score_bayes={bayes_score:.2f} ≥ umbral KEEP={bayes_keep_thr:.2f} "
+                f"(R={imdb_rating}, v={imdb_votes}, m={m_dynamic}, C={c_global:.2f})"
+            )
+        elif bayes_score <= bayes_delete_thr:
+            preliminary_decision = "DELETE"
+            preliminary_rule = "DELETE_BAYES"
+            preliminary_reason = (
+                f"score_bayes={bayes_score:.2f} ≤ umbral DELETE={bayes_delete_thr:.2f} "
+                f"(R={imdb_rating}, v={imdb_votes}, m={m_dynamic}, C={c_global:.2f})"
+            )
+        else:
+            preliminary_decision = "MAYBE"
+            preliminary_rule = "MAYBE_BAYES_MIDDLE"
+            preliminary_reason = (
+                f"score_bayes={bayes_score:.2f} entre umbral DELETE={bayes_delete_thr:.2f} "
+                f"y KEEP={bayes_keep_thr:.2f} (evidencia intermedia)"
+            )
+
+    # ----------------------------------------------------
+    # 2) REGLA SUAVE POSITIVA: RT alta puede subir a KEEP
+    # ----------------------------------------------------
+    if (
+        rt_score is not None
+        and imdb_rating is not None
+        and rt_score >= RT_KEEP_MIN_SCORE
+        and imdb_rating >= IMDB_KEEP_MIN_RATING_WITH_RT
+    ):
+        bayes_is_strong_delete = (
+            bayes_score is not None and bayes_score <= bayes_delete_thr
+        )
+
+        if not bayes_is_strong_delete:
             return {
-                "decision": "DELETE",
+                "decision": "KEEP",
                 "reason": (
-                    f"score_bayes={bayes_score:.2f} ≤ BAYES_DELETE_MAX_SCORE={BAYES_DELETE_MAX_SCORE} "
-                    f"(R={imdb_rating}, v={imdb_votes}, m={m_dynamic}, C={c_global:.2f})"
+                    f"RT={rt_score}% e imdbRating={imdb_rating} "
+                    f"superan umbrales RT_KEEP_MIN_SCORE={RT_KEEP_MIN_SCORE} "
+                    f"e IMDB_KEEP_MIN_RATING_WITH_RT={IMDB_KEEP_MIN_RATING_WITH_RT}; "
+                    "RT refuerza una opinión positiva del público."
                 ),
-                "rule": "DELETE_BAYES",
-                "inputs": {
-                    **inputs,
-                    "score_bayes": bayes_score,
-                    "m_dynamic": m_dynamic,
-                    "c_global": c_global,
-                },
+                "rule": "KEEP_RT_BOOST",
+                "inputs": inputs,
             }
 
     # ----------------------------------------------------
-    # Regla DELETE explícita: rating bajo + muchos votos  [Opción B]
+    # 3) REGLA SUAVE NEGATIVA: RT muy baja apoya DELETE
     # ----------------------------------------------------
-    if imdb_rating is not None and imdb_votes is not None:
+    if (
+        rt_score is not None
+        and rt_score <= RT_DELETE_MAX_SCORE
+        and imdb_rating is not None
+        and bayes_score is not None
+        and bayes_score <= bayes_keep_thr
+    ):
+        if preliminary_decision == "DELETE":
+            return {
+                "decision": "DELETE",
+                "reason": (
+                    f"{preliminary_reason}; además RT={rt_score}% ≤ RT_DELETE_MAX_SCORE={RT_DELETE_MAX_SCORE}, "
+                    "lo que refuerza la decisión de borrar (público muy negativo)."
+                ),
+                "rule": "DELETE_BAYES_RT_CONFIRMED",
+                "inputs": inputs,
+            }
+
+        if preliminary_decision == "MAYBE" and bayes_score <= (
+            bayes_delete_thr + 0.3
+        ):
+            return {
+                "decision": "DELETE",
+                "reason": (
+                    f"score_bayes={bayes_score:.2f} cercano al umbral DELETE={bayes_delete_thr:.2f} "
+                    f"y RT={rt_score}% muy baja (≤ {RT_DELETE_MAX_SCORE}); "
+                    "el público es claramente negativo."
+                ),
+                "rule": "DELETE_RT_TIEBREAKER",
+                "inputs": inputs,
+            }
+
+    # ----------------------------------------------------
+    # 4) FALLO EN BAYES → fallbacks por rating/votos clásicos
+    # ----------------------------------------------------
+    if bayes_score is None and imdb_rating is not None and imdb_votes is not None:
         dynamic_votes_needed = get_votes_threshold_for_year(year)
 
+        # 4.1 KEEP clásico
         if (
             dynamic_votes_needed > 0
-            and imdb_rating <= delete_rating_threshold
+            and imdb_rating >= IMDB_KEEP_MIN_RATING
+            and imdb_votes >= dynamic_votes_needed
+        ):
+            return {
+                "decision": "KEEP",
+                "reason": (
+                    "No se pudo calcular score bayesiano, pero imdbRating y votos son altos "
+                    f"para su antigüedad: imdbRating={imdb_rating}, imdbVotes={imdb_votes} "
+                    f"(mínimo por año={dynamic_votes_needed})."
+                ),
+                "rule": "KEEP_IMDB_FALLBACK",
+                "inputs": inputs,
+            }
+
+        # 4.2 DELETE clásico
+        if (
+            dynamic_votes_needed > 0
+            and imdb_rating <= IMDB_DELETE_MAX_RATING
             and imdb_votes >= dynamic_votes_needed
         ):
             return {
                 "decision": "DELETE",
                 "reason": (
-                    "Rating IMDb bajo pero con muchos votos para su antigüedad; "
-                    f"imdbRating={imdb_rating} ≤ umbral DELETE={delete_rating_threshold:.2f}, "
-                    f"imdbVotes={imdb_votes} ≥ mínimo por año={dynamic_votes_needed}"
+                    "No se pudo calcular score bayesiano; rating IMDb muy bajo con muchos votos "
+                    f"para su antigüedad: imdbRating={imdb_rating}, imdbVotes={imdb_votes}, "
+                    f"mínimo por año={dynamic_votes_needed}."
                 ),
-                "rule": "DELETE_LOW_RATING_HIGH_VOTES",
-                "inputs": {
-                    **inputs,
-                    "delete_rating_threshold": delete_rating_threshold,
-                    "dynamic_votes_needed": dynamic_votes_needed,
-                },
+                "rule": "DELETE_IMDB_FALLBACK",
+                "inputs": inputs,
             }
 
     # ----------------------------------------------------
-    # Regla DELETE por IMDb (rating bajo + pocos votos)
-    #   (solo si lo anterior no ha decidido antes)
+    # 5) Si tenemos decisión preliminar por BAYES, la usamos
+    #     y dejamos que Metacritic SOLO refuerce la explicación
     # ----------------------------------------------------
-    if imdb_rating is not None and imdb_votes is not None:
-        if imdb_rating <= delete_rating_threshold and imdb_votes <= IMDB_DELETE_MAX_VOTES:
-            return {
-                "decision": "DELETE",
-                "reason": (
-                    f"imdbRating={imdb_rating} ≤ umbral DELETE={delete_rating_threshold:.2f} "
-                    f"e imdbVotes={imdb_votes} ≤ IMDB_DELETE_MAX_VOTES={IMDB_DELETE_MAX_VOTES}"
-                ),
-                "rule": "DELETE_IMDB",
-                "inputs": {
-                    **inputs,
-                    "delete_rating_threshold": delete_rating_threshold,
-                },
-            }
+    if preliminary_decision is not None:
+        reason = preliminary_reason or "Decisión derivada del score bayesiano."
+        meta = metacritic_score
 
-    # ----------------------------------------------------
-    # Regla DELETE sin RT: umbral de votos algo distinto
-    # ----------------------------------------------------
-    if (
-        imdb_rating is not None
-        and imdb_votes is not None
-        and rt_score is None
-        and imdb_rating <= delete_rating_threshold
-        and imdb_votes <= IMDB_DELETE_MAX_VOTES_NO_RT
-    ):
+        if meta is not None:
+            if preliminary_decision == "KEEP" and meta >= METACRITIC_KEEP_MIN_SCORE:
+                reason += (
+                    f" La crítica especializada también es favorable "
+                    f"(Metacritic={meta})."
+                )
+            elif preliminary_decision == "DELETE" and meta <= METACRITIC_DELETE_MAX_SCORE:
+                reason += (
+                    f" La crítica especializada también es muy negativa "
+                    f"(Metacritic={meta})."
+                )
+
         return {
-            "decision": "DELETE",
-            "reason": (
-                f"imdbRating={imdb_rating} ≤ umbral DELETE={delete_rating_threshold:.2f} "
-                f"sin RT y imdbVotes={imdb_votes} ≤ IMDB_DELETE_MAX_VOTES_NO_RT={IMDB_DELETE_MAX_VOTES_NO_RT}"
-            ),
-            "rule": "DELETE_IMDB_NO_RT",
-            "inputs": {
-                **inputs,
-                "delete_rating_threshold": delete_rating_threshold,
-            },
+            "decision": preliminary_decision,
+            "reason": reason,
+            "rule": preliminary_rule or "BAYES_GENERIC",
+            "inputs": inputs,
         }
 
     # ----------------------------------------------------
-    # Fallback: MAYBE (con razón más explícita)
+    # 6) Sin bayes y sin reglas fuertes → MAYBE / UNKNOWN más explicado
     # ----------------------------------------------------
+    if imdb_rating is not None or rt_score is not None:
+        if imdb_votes is None or imdb_votes < IMDB_MIN_VOTES_FOR_KNOWN:
+            return {
+                "decision": "MAYBE",
+                "reason": (
+                    "Datos incompletos: rating disponible pero con pocos votos IMDb "
+                    f"(imdbRating={imdb_rating}, imdbVotes={imdb_votes})."
+                ),
+                "rule": "MAYBE_LOW_INFO",
+                "inputs": inputs,
+            }
+
+        return {
+            "decision": "MAYBE",
+            "reason": (
+                "No se ha podido clasificar claramente en KEEP/DELETE con las reglas "
+                f"actuales (imdbRating={imdb_rating}, imdbVotes={imdb_votes}, "
+                f"rt_score={rt_score}, metacritic={metacritic_score})."
+            ),
+            "rule": "MAYBE_FALLBACK",
+            "inputs": inputs,
+        }
+
     return {
-        "decision": "MAYBE",
+        "decision": "UNKNOWN",
         "reason": (
-            "No cumple claramente KEEP ni DELETE según umbrales dinámicos de rating/votos; "
-            f"R={imdb_rating}, v={imdb_votes}, RT={rt_score}, "
-            f"keep_thr≈{keep_rating_threshold:.2f}, delete_thr≈{delete_rating_threshold:.2f}"
+            "Solo hay información parcial (p.ej. RT o Metacritic sin IMDb) y no es suficiente "
+            "para tomar una decisión segura."
         ),
-        "rule": "FALLBACK_MAYBE",
-        "inputs": {
-            **inputs,
-            "keep_rating_threshold": keep_rating_threshold,
-            "delete_rating_threshold": delete_rating_threshold,
-        },
+        "rule": "UNKNOWN_PARTIAL",
+        "inputs": inputs,
     }
 
 
@@ -257,14 +335,19 @@ def decide_action(
     imdb_votes: Optional[int],
     rt_score: Optional[int],
     year: Optional[int] = None,
+    metacritic_score: Optional[int] = None,
 ) -> Tuple[str, str]:
     """
-    Devuelve (decision, reason) en función de los umbrales configurados.
+    Devuelve (decision, reason) usando compute_scoring.
 
-    year es opcional para mantener compatibilidad con llamadas antiguas
-    que solo pasan (rating, votos, rt_score). Si es None, se usará el
-    umbral de votos dinámico por defecto (get_votes_threshold_for_year
-    ya gestiona el caso None).
+    metacritic_score es opcional (0-100). Todas las llamadas anteriores
+    que pasan solo (rating, votos, rt, year) siguen funcionando igual.
     """
-    result = compute_scoring(imdb_rating, imdb_votes, rt_score, year)
+    result = compute_scoring(
+        imdb_rating=imdb_rating,
+        imdb_votes=imdb_votes,
+        rt_score=rt_score,
+        year=year,
+        metacritic_score=metacritic_score,
+    )
     return result["decision"], result["reason"]

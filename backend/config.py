@@ -7,10 +7,14 @@ from dotenv import load_dotenv
 # Carga de variables de entorno desde .env
 load_dotenv()
 
+# ----------------------------------------------------
+# Conexión a Plex / OMDb
+# ----------------------------------------------------
 PLEX_BASEURL = os.getenv("PLEX_BASEURL")
 PLEX_TOKEN = os.getenv("PLEX_TOKEN")
 OMDB_API_KEY = os.getenv("OMDB_API_KEY")
 
+# Prefijo de ficheros de salida (report_all, report_filtered, etc.)
 OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "report")
 
 raw_exclude = os.getenv("EXCLUDE_LIBRARIES", "")
@@ -19,27 +23,47 @@ EXCLUDE_LIBRARIES = [x.strip() for x in raw_exclude.split(",") if x.strip()]
 # ----------------------------------------------------
 # Umbrales de decisión para KEEP/DELETE
 # ----------------------------------------------------
+#
+# IMPORTANTE:
+# - El scoring principal es bayesiano (BAYES_*).
+# - Estos valores actúan como refuerzo adicional y/o fallback
+#   cuando no hay datos suficientes en omdb_cache.
+# ----------------------------------------------------
 
-# ---- KEEP thresholds ----
-IMDB_KEEP_MIN_VOTES = int(os.getenv("IMDB_KEEP_MIN_VOTES", "50000"))
-IMDB_KEEP_MIN_RATING = float(os.getenv("IMDB_KEEP_MIN_RATING", "7.0"))
+# ---- Rotten Tomatoes (positivo / negativo) ----
+RT_KEEP_MIN_SCORE = int(
+    os.getenv("RT_KEEP_MIN_SCORE", "55")
+)  # RT >= 55% + buen IMDb → refuerza KEEP
+
+RT_DELETE_MAX_SCORE = int(
+    os.getenv("RT_DELETE_MAX_SCORE", "50")
+)  # RT muy bajo → refuerza DELETE
+
+# ---- IMDb con RT (refuerzo positivo) ----
 IMDB_KEEP_MIN_RATING_WITH_RT = float(
-    os.getenv("IMDB_KEEP_MIN_RATING_WITH_RT", "6.5")
-)
-RT_KEEP_MIN_SCORE = int(os.getenv("RT_KEEP_MIN_SCORE", "75"))
+    os.getenv("IMDB_KEEP_MIN_RATING_WITH_RT", "6.0")
+)  # IMDb mínimo cuando RT es aceptable
 
-# ---- DELETE thresholds ----
-IMDB_DELETE_MAX_RATING = float(os.getenv("IMDB_DELETE_MAX_RATING", "6.0"))
-IMDB_DELETE_MAX_VOTES = int(os.getenv("IMDB_DELETE_MAX_VOTES", "5000"))
-IMDB_DELETE_MAX_VOTES_NO_RT = int(
-    os.getenv("IMDB_DELETE_MAX_VOTES_NO_RT", "2000")
-)
-RT_DELETE_MAX_SCORE = int(os.getenv("RT_DELETE_MAX_SCORE", "50"))
+# ---- Fallbacks de rating (cuando no hay suficientes datos para auto-umbrales) ----
+IMDB_KEEP_MIN_RATING = float(
+    os.getenv("IMDB_KEEP_MIN_RATING", "5.7")
+)  # solo fallback si no hay suficientes títulos para percentiles
 
-# ---- UNKNOWN thresholds ----
-IMDB_MIN_VOTES_FOR_KNOWN = int(os.getenv("IMDB_MIN_VOTES_FOR_KNOWN", "1000"))
+IMDB_DELETE_MAX_RATING = float(
+    os.getenv("IMDB_DELETE_MAX_RATING", "5.5")
+)  # solo fallback si no hay suficientes títulos para percentiles
 
-# ---- LOW thresholds (para misidentificación) ----
+# ---- Votos mínimos globales (fallback) ----
+IMDB_KEEP_MIN_VOTES = int(
+    os.getenv("IMDB_KEEP_MIN_VOTES", "30000")
+)  # se usa solo si IMDB_VOTES_BY_YEAR está vacío
+
+# ---- UNKNOWN por falta de información ----
+IMDB_MIN_VOTES_FOR_KNOWN = int(
+    os.getenv("IMDB_MIN_VOTES_FOR_KNOWN", "100")
+)  # menos de esto → UNKNOWN
+
+# ---- LOW thresholds (para misidentificación / sospechosos) ----
 IMDB_RATING_LOW_THRESHOLD = float(
     os.getenv("IMDB_RATING_LOW_THRESHOLD", "3.0")
 )
@@ -49,28 +73,37 @@ RT_RATING_LOW_THRESHOLD = int(
 
 # ----------------------------------------------------
 # Auto-umbrales de rating desde omdb_cache
-#   (se usan en backend.stats para calcular KEEP/DELETE
-#    dinámicos; si no hay suficientes títulos válidos,
-#    se cae en IMDB_KEEP_MIN_RATING / IMDB_DELETE_MAX_RATING)
+#   (se usan en backend.stats para calcular umbrales
+#    KEEP/DELETE dinámicos por percentil; si no hay
+#    suficientes títulos válidos, se cae en los
+#    fallbacks IMDB_KEEP_MIN_RATING / IMDB_DELETE_MAX_RATING)
 # ----------------------------------------------------
 AUTO_KEEP_RATING_PERCENTILE = float(
-    os.getenv("AUTO_KEEP_RATING_PERCENTILE", "0.70")  # KEEP = top 30%
+    os.getenv("AUTO_KEEP_RATING_PERCENTILE", "0.70")  # top 30% = buenas
 )
 AUTO_DELETE_RATING_PERCENTILE = float(
-    os.getenv("AUTO_DELETE_RATING_PERCENTILE", "0.30")  # DELETE = bottom 30%
+    os.getenv("AUTO_DELETE_RATING_PERCENTILE", "0.01")  # peor 1% = muy malas
 )
 RATING_MIN_TITLES_FOR_AUTO = int(
-    os.getenv("RATING_MIN_TITLES_FOR_AUTO", "300")
+    os.getenv("RATING_MIN_TITLES_FOR_AUTO", "300")  # mínimo para aplicar percentiles
 )
 
 # ----------------------------------------------------
-# Votos mínimos según antigüedad (para scoring justo)
+# Votos mínimos según antigüedad (para m en Bayes)
 #   Ejemplo en .env:
 #   IMDB_VOTES_BY_YEAR="1980:500,2000:2000,2010:5000,9999:10000"
 # ----------------------------------------------------
 _IMDB_VOTES_BY_YEAR_RAW = os.getenv(
     "IMDB_VOTES_BY_YEAR",
     "1980:500,2000:2000,2010:5000,9999:10000",
+)
+
+# ---- Metacritic (crítica especializada, 0-100) ----
+METACRITIC_KEEP_MIN_SCORE = int(
+    os.getenv("METACRITIC_KEEP_MIN_SCORE", "70")  # buena crítica refuerza KEEP
+)
+METACRITIC_DELETE_MAX_SCORE = int(
+    os.getenv("METACRITIC_DELETE_MAX_SCORE", "40")  # crítica muy mala refuerza DELETE
 )
 
 
@@ -116,7 +149,7 @@ def get_votes_threshold_for_year(year: int | None) -> int:
     según su año, usando la tabla IMDB_VOTES_BY_YEAR.
 
     Reglas:
-      - Si la tabla está vacía: devolvemos IMDB_KEEP_MIN_VOTES (fallback clásico).
+      - Si la tabla está vacía: devolvemos IMDB_KEEP_MIN_VOTES (fallback).
       - Si year es None o no es convertible a int: usamos el tramo más exigente
         (último de IMDB_VOTES_BY_YEAR).
       - Recorre IMDB_VOTES_BY_YEAR y devuelve el primer votes_min
@@ -147,10 +180,10 @@ def get_votes_threshold_for_year(year: int | None) -> int:
 # Parámetros para el scoring bayesiano global
 # ----------------------------------------------------
 BAYES_GLOBAL_MEAN_DEFAULT = float(
-    os.getenv("BAYES_GLOBAL_MEAN_DEFAULT", "6.8")
+    os.getenv("BAYES_GLOBAL_MEAN_DEFAULT", "6.0")
 )
 BAYES_DELETE_MAX_SCORE = float(
-    os.getenv("BAYES_DELETE_MAX_SCORE", "5.8")
+    os.getenv("BAYES_DELETE_MAX_SCORE", "4.9")
 )
 BAYES_MIN_TITLES_FOR_GLOBAL_MEAN = int(
     os.getenv("BAYES_MIN_TITLES_FOR_GLOBAL_MEAN", "200")
@@ -187,7 +220,7 @@ OMDB_RETRY_EMPTY_CACHE = (
     os.getenv("OMDB_RETRY_EMPTY_CACHE", "false").lower() == "true"
 )
 
-# Modo silencioso: barra de progreso en vez de logs verbosos
+# Modo silencioso (afecta a logs en varios módulos)
 SILENT_MODE = os.getenv("SILENT_MODE", "false").lower() == "true"
 
 # ----------------------------------------------------

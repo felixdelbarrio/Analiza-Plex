@@ -13,20 +13,23 @@ from backend.config import (
     RATING_MIN_TITLES_FOR_AUTO,
     IMDB_KEEP_MIN_RATING,
     IMDB_DELETE_MAX_RATING,
-    SILENT_MODE,  # 👈 para controlar logs
+    SILENT_MODE,
 )
-from backend.omdb_client import omdb_cache, parse_imdb_rating_from_omdb
-
+from backend.omdb_client import (
+    omdb_cache,
+    parse_imdb_rating_from_omdb,
+    parse_rt_score_from_omdb,
+)
 
 # -------------------------------------------------------------------
-# Pequeño helper para logs controlados por SILENT_MODE
+# Logging controlado por SILENT_MODE
 # -------------------------------------------------------------------
+
+
 def _log_stats(msg: str) -> None:
-    """
-    Logs del módulo stats: solo se muestran si SILENT_MODE es False.
-    """
-    if not SILENT_MODE:
-        print(msg)
+    if SILENT_MODE:
+        return
+    print(msg)
 
 
 # -------------------------------------------------------------------
@@ -42,9 +45,17 @@ _GLOBAL_IMDB_MEAN_COUNT: Optional[int] = None
 _RATINGS_LIST: Optional[List[float]] = None
 _RATINGS_COUNT: int = 0
 
+# Distribución de ratings SOLO para títulos SIN RT
+_RATINGS_NO_RT_LIST: Optional[List[float]] = None
+_RATINGS_NO_RT_COUNT: int = 0
+
 # Auto-umbrales de rating KEEP / DELETE
 _AUTO_KEEP_RATING_THRESHOLD: Optional[float] = None
 _AUTO_DELETE_RATING_THRESHOLD: Optional[float] = None
+
+# Auto-umbrales de rating KEEP / DELETE para pelis SIN RT
+_AUTO_KEEP_RATING_THRESHOLD_NO_RT: Optional[float] = None
+_AUTO_DELETE_RATING_THRESHOLD_NO_RT: Optional[float] = None
 
 
 # -------------------------------------------------------------------
@@ -134,6 +145,7 @@ def compute_global_imdb_mean_from_df(df_all: pd.DataFrame) -> Optional[float]:
     if "imdb_rating" not in df_all.columns:
         return None
 
+    # Convertimos a numérico y soltamos NaN
     ratings = pd.to_numeric(df_all["imdb_rating"], errors="coerce").dropna()
     if ratings.empty:
         return None
@@ -142,7 +154,7 @@ def compute_global_imdb_mean_from_df(df_all: pd.DataFrame) -> Optional[float]:
 
 
 # -------------------------------------------------------------------
-# Ratings list (ordenada) para percentiles
+# Ratings list (ordenada) para percentiles (TODOS los títulos)
 # -------------------------------------------------------------------
 def _load_imdb_ratings_list_from_cache() -> Tuple[List[float], int]:
     global _RATINGS_LIST, _RATINGS_COUNT
@@ -169,6 +181,45 @@ def _load_imdb_ratings_list_from_cache() -> Tuple[List[float], int]:
     return _RATINGS_LIST, _RATINGS_COUNT
 
 
+# -------------------------------------------------------------------
+# Ratings list SOLO de títulos SIN RT
+# -------------------------------------------------------------------
+def _load_imdb_ratings_list_no_rt_from_cache() -> Tuple[List[float], int]:
+    """
+    Igual que _load_imdb_ratings_list_from_cache, pero SOLO para
+    títulos cuya entrada de OMDb NO tiene Rotten Tomatoes (rt_score is None).
+    """
+    global _RATINGS_NO_RT_LIST, _RATINGS_NO_RT_COUNT
+
+    if _RATINGS_NO_RT_LIST is not None:
+        return _RATINGS_NO_RT_LIST, _RATINGS_NO_RT_COUNT
+
+    ratings: List[float] = []
+    if isinstance(omdb_cache, dict):
+        for _, data in omdb_cache.items():
+            if not isinstance(data, dict):
+                continue
+            r = parse_imdb_rating_from_omdb(data)
+            if r is None:
+                continue
+            rt = parse_rt_score_from_omdb(data)
+            if rt is not None:
+                # Solo queremos las que NO tienen RT
+                continue
+            ratings.append(float(r))
+
+    ratings.sort()
+    _RATINGS_NO_RT_LIST = ratings
+    _RATINGS_NO_RT_COUNT = len(ratings)
+
+    if _RATINGS_NO_RT_COUNT == 0:
+        _log_stats(
+            "INFO [stats] omdb_cache sin títulos válidos para auto-umbrales NO_RT."
+        )
+
+    return _RATINGS_NO_RT_LIST, _RATINGS_NO_RT_COUNT
+
+
 def _percentile(sorted_vals: List[float], p: float) -> Optional[float]:
     """
     Percentil sencillo sobre lista ORDENADA de floats.
@@ -189,7 +240,7 @@ def _percentile(sorted_vals: List[float], p: float) -> Optional[float]:
 
 
 # -------------------------------------------------------------------
-# Auto-umbral KEEP
+# Auto-umbral KEEP (todos los títulos)
 # -------------------------------------------------------------------
 def get_auto_keep_rating_threshold() -> float:
     """
@@ -207,7 +258,7 @@ def get_auto_keep_rating_threshold() -> float:
         if val is not None:
             _AUTO_KEEP_RATING_THRESHOLD = float(val)
             _log_stats(
-                f"INFO [stats] IMDB_KEEP_MIN_RATING auto-ajustada: "
+                f"INFO [stats] IMDB_KEEP_MIN_RATING auto-ajustada (global): "
                 f"{val:.3f} (p={AUTO_KEEP_RATING_PERCENTILE}, n={n})"
             )
             return _AUTO_KEEP_RATING_THRESHOLD
@@ -222,7 +273,7 @@ def get_auto_keep_rating_threshold() -> float:
 
 
 # -------------------------------------------------------------------
-# Auto-umbral DELETE
+# Auto-umbral DELETE (todos los títulos)
 # -------------------------------------------------------------------
 def get_auto_delete_rating_threshold() -> float:
     """
@@ -240,7 +291,7 @@ def get_auto_delete_rating_threshold() -> float:
         if val is not None:
             _AUTO_DELETE_RATING_THRESHOLD = float(val)
             _log_stats(
-                f"INFO [stats] IMDB_DELETE_MAX_RATING auto-ajustada: "
+                f"INFO [stats] IMDB_DELETE_MAX_RATING auto-ajustada (global): "
                 f"{val:.3f} (p={AUTO_DELETE_RATING_PERCENTILE}, n={n})"
             )
             return _AUTO_DELETE_RATING_THRESHOLD
@@ -252,3 +303,71 @@ def get_auto_delete_rating_threshold() -> float:
         f"(n={n} < RATING_MIN_TITLES_FOR_AUTO={RATING_MIN_TITLES_FOR_AUTO})"
     )
     return _AUTO_DELETE_RATING_THRESHOLD
+
+
+# -------------------------------------------------------------------
+# Auto-umbral KEEP para pelis SIN RT
+# -------------------------------------------------------------------
+def get_auto_keep_rating_threshold_no_rt() -> float:
+    """
+    Umbral KEEP específico para películas que NO tienen Rotten Tomatoes.
+    Usa la distribución de ratings solo de títulos sin RT.
+    """
+    global _AUTO_KEEP_RATING_THRESHOLD_NO_RT
+
+    if _AUTO_KEEP_RATING_THRESHOLD_NO_RT is not None:
+        return _AUTO_KEEP_RATING_THRESHOLD_NO_RT
+
+    ratings, n = _load_imdb_ratings_list_no_rt_from_cache()
+
+    if n >= RATING_MIN_TITLES_FOR_AUTO:
+        val = _percentile(ratings, AUTO_KEEP_RATING_PERCENTILE)
+        if val is not None:
+            _AUTO_KEEP_RATING_THRESHOLD_NO_RT = float(val)
+            _log_stats(
+                f"INFO [stats] IMDB_KEEP_MIN_RATING auto-ajustada (SIN_RT): "
+                f"{val:.3f} (p={AUTO_KEEP_RATING_PERCENTILE}, n={n})"
+            )
+            return _AUTO_KEEP_RATING_THRESHOLD_NO_RT
+
+    # Fallback → reutilizamos el umbral global
+    _AUTO_KEEP_RATING_THRESHOLD_NO_RT = get_auto_keep_rating_threshold()
+    _log_stats(
+        "INFO [stats] Fallback IMDB_KEEP_MIN_RATING_NO_RT usando umbral global "
+        f"{_AUTO_KEEP_RATING_THRESHOLD_NO_RT:.3f} (n_NO_RT={n} < RATING_MIN_TITLES_FOR_AUTO={RATING_MIN_TITLES_FOR_AUTO})"
+    )
+    return _AUTO_KEEP_RATING_THRESHOLD_NO_RT
+
+
+# -------------------------------------------------------------------
+# Auto-umbral DELETE para pelis SIN RT
+# -------------------------------------------------------------------
+def get_auto_delete_rating_threshold_no_rt() -> float:
+    """
+    Umbral DELETE específico para películas que NO tienen Rotten Tomatoes.
+    Usa la distribución de ratings solo de títulos sin RT.
+    """
+    global _AUTO_DELETE_RATING_THRESHOLD_NO_RT
+
+    if _AUTO_DELETE_RATING_THRESHOLD_NO_RT is not None:
+        return _AUTO_DELETE_RATING_THRESHOLD_NO_RT
+
+    ratings, n = _load_imdb_ratings_list_no_rt_from_cache()
+
+    if n >= RATING_MIN_TITLES_FOR_AUTO:
+        val = _percentile(ratings, AUTO_DELETE_RATING_PERCENTILE)
+        if val is not None:
+            _AUTO_DELETE_RATING_THRESHOLD_NO_RT = float(val)
+            _log_stats(
+                f"INFO [stats] IMDB_DELETE_MAX_RATING auto-ajustada (SIN_RT): "
+                f"{val:.3f} (p={AUTO_DELETE_RATING_PERCENTILE}, n={n})"
+            )
+            return _AUTO_DELETE_RATING_THRESHOLD_NO_RT
+
+    # Fallback → reutilizamos el umbral global
+    _AUTO_DELETE_RATING_THRESHOLD_NO_RT = get_auto_delete_rating_threshold()
+    _log_stats(
+        "INFO [stats] Fallback IMDB_DELETE_MAX_RATING_NO_RT usando umbral global "
+        f"{_AUTO_DELETE_RATING_THRESHOLD_NO_RT:.3f} (n_NO_RT={n} < RATING_MIN_TITLES_FOR_AUTO={RATING_MIN_TITLES_FOR_AUTO})"
+    )
+    return _AUTO_DELETE_RATING_THRESHOLD_NO_RT

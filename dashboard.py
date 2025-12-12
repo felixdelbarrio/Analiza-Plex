@@ -11,6 +11,27 @@ from frontend.components import render_modal
 from frontend.data_utils import format_count_size
 from frontend.tabs import advanced, all_movies, candidates, charts, delete, metadata
 
+# 🔎 nuevos imports para ver los umbrales efectivos
+from backend.stats import (
+    get_auto_keep_rating_threshold,
+    get_auto_delete_rating_threshold,
+    get_global_imdb_mean_info,
+)
+from backend.config import (
+    IMDB_KEEP_MIN_VOTES,
+    IMDB_KEEP_MIN_RATING,
+    IMDB_DELETE_MAX_RATING,
+    IMDB_KEEP_MIN_RATING_WITH_RT,
+    BAYES_GLOBAL_MEAN_DEFAULT,
+    BAYES_DELETE_MAX_SCORE,
+    BAYES_MIN_TITLES_FOR_GLOBAL_MEAN,
+    AUTO_KEEP_RATING_PERCENTILE,
+    AUTO_DELETE_RATING_PERCENTILE,
+    RATING_MIN_TITLES_FOR_AUTO,
+    IMDB_RATING_LOW_THRESHOLD,
+    RT_RATING_LOW_THRESHOLD,
+)
+
 # ----------------------------------------------------
 # Warnings — silenciar SettingWithCopyWarning (st_aggrid/pandas)
 # ----------------------------------------------------
@@ -49,6 +70,7 @@ if "modal_row" not in st.session_state:
 # ----------------------------------------------------
 st.set_page_config(page_title="Plex Movies Cleaner", layout="wide")
 
+# Ocultar cabecera nativa de Streamlit
 st.markdown(
     """
     <style>
@@ -58,6 +80,21 @@ st.markdown(
     div[data-testid="stToolbar"],
     div[data-testid="stCommandBar"] {
         display: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Reducir la holgura superior del contenido
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding-top: 0.5rem !important;
+    }
+    h1, h2, h3 {
+        margin-top: 0.2rem !important;
     }
     </style>
     """,
@@ -80,6 +117,48 @@ if not os.path.exists(ALL_CSV):
     st.stop()
 
 df_all, df_filtered = load_reports(ALL_CSV, FILTERED_CSV)
+
+# ----------------------------------------------------
+# Log de umbrales efectivos en TERMINAL (solo 1 vez)
+# ----------------------------------------------------
+if "thresholds_logged" not in st.session_state:
+    # Valores auto-ajustados desde omdb_cache
+    eff_keep = get_auto_keep_rating_threshold()
+    eff_delete = get_auto_delete_rating_threshold()
+    bayes_mean, bayes_source, bayes_n = get_global_imdb_mean_info()
+
+    print("\n================ UMBRALES DE SCORING EFECTIVOS ================")
+    print(f"IMDB_KEEP_MIN_VOTES (fallback / votos por año): {IMDB_KEEP_MIN_VOTES}")
+    print(f"IMDB_KEEP_MIN_RATING (fallback): {IMDB_KEEP_MIN_RATING}")
+    print(f"IMDB_DELETE_MAX_RATING (fallback): {IMDB_DELETE_MAX_RATING}")
+    print(f"IMDB_KEEP_MIN_RATING_WITH_RT: {IMDB_KEEP_MIN_RATING_WITH_RT}")
+    print()
+    print(
+        f"AUTO_KEEP_RATING_PERCENTILE = {AUTO_KEEP_RATING_PERCENTILE} "
+        f"(RATING_MIN_TITLES_FOR_AUTO = {RATING_MIN_TITLES_FOR_AUTO})"
+    )
+    print(
+        f"AUTO_DELETE_RATING_PERCENTILE = {AUTO_DELETE_RATING_PERCENTILE} "
+        f"(RATING_MIN_TITLES_FOR_AUTO = {RATING_MIN_TITLES_FOR_AUTO})"
+    )
+    print(f"→ Umbral KEEP efectivo (auto/fallback)   = {eff_keep:.3f}")
+    print(f"→ Umbral DELETE efectivo (auto/fallback) = {eff_delete:.3f}")
+    print()
+    print(
+        f"BAYES_GLOBAL_MEAN_DEFAULT = {BAYES_GLOBAL_MEAN_DEFAULT} "
+        f"(mín. títulos para media caché = {BAYES_MIN_TITLES_FOR_GLOBAL_MEAN})"
+    )
+    print(
+        f"Media global IMDb usada como C = {bayes_mean:.3f} "
+        f"(fuente = {bayes_source}, n = {bayes_n})"
+    )
+    print(f"BAYES_DELETE_MAX_SCORE = {BAYES_DELETE_MAX_SCORE}")
+    print()
+    print(f"IMDB_RATING_LOW_THRESHOLD = {IMDB_RATING_LOW_THRESHOLD}")
+    print(f"RT_RATING_LOW_THRESHOLD   = {RT_RATING_LOW_THRESHOLD}")
+    print("===============================================================\n")
+
+    st.session_state["thresholds_logged"] = True
 
 # ----------------------------------------------------
 # Resumen general (backend.summary)

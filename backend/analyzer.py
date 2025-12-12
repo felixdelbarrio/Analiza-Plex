@@ -47,6 +47,7 @@ def analyze_single_movie(
         imdb_rating = None
         imdb_votes = None
         rt_score = None
+        metacritic_score = None
         imdb_id = imdb_id_hint
         decision = "UNKNOWN"
         reason = "Sin datos"
@@ -55,13 +56,42 @@ def analyze_single_movie(
         poster_url = None
         trailer_url = None
         omdb_json_str = None
-        wiki_meta = {}
+        wiki_meta: Dict[str, Any] = {}
     else:
         imdb_id = omdb_like_data.get("imdbID") or imdb_id_hint
         wiki_meta = omdb_like_data.get("__wiki") or {}
 
+        # --- Ratings principales (público) ---
         imdb_rating, imdb_votes, rt_score = extract_ratings_from_omdb(omdb_like_data)
-        decision, reason = decide_action(imdb_rating, imdb_votes, rt_score, year)
+
+        # --- Metacritic (crítica especializada, 0-100) ---
+        metacritic_score: Optional[int] = None
+
+        # 1) Campo estándar de OMDb: "Metascore"
+        raw_meta = omdb_like_data.get("Metascore")
+        if raw_meta and raw_meta != "N/A":
+            try:
+                metacritic_score = int(str(raw_meta).strip())
+            except Exception:
+                metacritic_score = None
+
+        # 2) Posible valor desde Wikipedia/Wikidata si algún día lo añadimos a __wiki
+        if metacritic_score is None and wiki_meta:
+            raw_meta2 = wiki_meta.get("metacritic_score")
+            if raw_meta2 and raw_meta2 != "N/A":
+                try:
+                    metacritic_score = int(str(raw_meta2).strip())
+                except Exception:
+                    metacritic_score = None
+
+        # Scoring final (incluyendo metacritic_score como apoyo)
+        decision, reason = decide_action(
+            imdb_rating,
+            imdb_votes,
+            rt_score,
+            year,
+            metacritic_score=metacritic_score,
+        )
 
         misidentified_hint = detect_misidentified(
             title, year, omdb_like_data, imdb_rating, imdb_votes, rt_score
@@ -99,6 +129,7 @@ def analyze_single_movie(
         "imdb_rating": imdb_rating,
         "imdb_votes": imdb_votes,
         "rt_score": rt_score,
+        "metacritic_score": metacritic_score,  # 👈 nuevo campo para el dashboard
         "decision": decision,
         "reason": reason,
         "misidentified_hint": misidentified_hint,
