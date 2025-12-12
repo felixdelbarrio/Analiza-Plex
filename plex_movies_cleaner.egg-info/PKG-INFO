@@ -1,0 +1,256 @@
+Metadata-Version: 2.4
+Name: plex-movies-cleaner
+Version: 0.1.0
+Summary: Herramientas para analizar bibliotecas de Plex y sugerir limpieza/normalización de metadatos.
+Home-page: 
+Author: Félix del Barrio
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: python-dotenv
+Requires-Dist: requests
+Requires-Dist: plexapi
+Requires-Dist: googletrans==4.0.0-rc1
+Requires-Dist: pandas
+Requires-Dist: streamlit
+Requires-Dist: altair
+Requires-Dist: st-aggrid
+Provides-Extra: dev
+Dynamic: author
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: license-file
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+
+# 📘 Plex Movies Cleaner — Analizador Inteligente de Películas para Plex
+
+Este proyecto analiza automáticamente tus bibliotecas Plex, consulta IMDb y Rotten Tomatoes mediante OMDb, clasifica películas y genera reportes y dashboards interactivos.  
+Ahora incorpora **instalación editable mediante `setup.py`** y un flujo más profesional de dependencias.
+
+---
+
+# 📄 Índice
+
+- Características
+- Requisitos
+- Instalación (nuevo sistema con setup.py)
+- Instalación clásica (requirements.txt)
+- Configuración del `.env`
+- Ejecutar el analizador
+- Dashboard Streamlit
+- Cache de OMDb
+- Manejo del rate limit
+- Estructura de CSV
+- Borrado seguro
+- Mejoras futuras
+
+---
+
+# ⚙️ Características principales
+
+- Conexión a Plex
+- Obtención de ratings IMDb + RT mediante OMDb
+- Cache local persistente (`omdb_cache.json`)
+- Clasificación automática: KEEP / MAYBE / DELETE / UNKNOWN
+- Generación de:
+  - `report_all.csv`
+  - `report_filtered.csv`
+  - `report_filtered.html`
+- Dashboard gráfico en Streamlit
+- Borrado seguro de archivos desde interfaz
+- Nuevo: instalación editable con:
+
+```
+pip install -e .
+```
+
+---
+
+# 🧩 Requisitos
+
+- Python 3.9+
+- Servidor Plex accesible
+- API Key de OMDb
+- Token de Plex
+- macOS / Linux / Raspberry Pi OS
+
+---
+
+# 🛠 Instalación — NUEVO SISTEMA RECOMENDADO
+
+El proyecto ahora es instalable como paquete Python.
+
+### 1. Crear un entorno virtual
+
+```
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 2. Instalar el proyecto en modo editable
+
+```
+pip install -e .
+```
+
+Esto instalará automáticamente todas las dependencias declaradas en `setup.py`.
+
+---
+
+# 🧪 Instalación clásica mediante `requirements.txt`
+
+Si prefieres el flujo tradicional:
+
+```
+pip install -r requirements.txt
+```
+
+Internamente esto ejecuta:
+
+```
+pip install -e .[dev]
+```
+
+---
+
+# 🔑 Token de Plex
+
+Obtén tu token en:
+
+1. https://app.plex.tv/desktop  
+2. Abre tu servidor  
+3. F12 → pestaña Network  
+4. Busca `X-Plex-Token`
+
+---
+
+# ⚙️ Archivo `.env`
+
+Ejemplo:
+
+```
+PLEX_BASEURL=http://192.168.1.10:32400
+PLEX_TOKEN=TU_TOKEN
+OMDB_API_KEY=TU_API_KEY
+EXCLUDE_LIBRARIES=Series TV, Música
+OUTPUT_PREFIX=report
+IMDB_KEEP_MIN_RATING=7.0
+IMDB_KEEP_MIN_RATING_WITH_RT=6.5
+RT_KEEP_MIN_SCORE=75
+IMDB_KEEP_MIN_VOTES=50000
+IMDB_DELETE_MAX_RATING=6.0
+RT_DELETE_MAX_SCORE=50
+DELETE_DRY_RUN=true
+DELETE_REQUIRE_CONFIRM=true
+```
+
+---
+
+# ▶️ Ejecutar el analizador
+
+```
+python analiza_plex.py
+```
+
+Genera automáticamente:
+
+- `report_all.csv`
+- `report_filtered.csv`
+- `report_filtered.html`
+
+---
+
+# 📊 Dashboard Streamlit
+
+```
+streamlit run dashboard.py
+```
+
+Acceder en navegador:
+
+```
+http://localhost:8501
+```
+
+Incluye:
+
+- Filtros por biblioteca
+- Ratings IMDb/RT
+- Buscador
+- Gráficos comparativos
+- Borrado seguro
+
+---
+
+# 💾 Cache `omdb_cache.json`
+
+- Se reutilizan respuestas de OMDb
+- Reduce llamadas y bloqueos
+- Mejora tiempos en futuras ejecuciones
+
+---
+
+# 🚨 Rate-limit de OMDb
+
+Si OMDb devuelve "Request limit reached":
+
+1. Espera automática (por defecto 60s)
+2. Reintento
+3. Parada segura si persiste
+
+---
+
+# 📊 Estructura de los CSV
+
+`report_all.csv` contiene:
+
+- library  
+- title  
+- year  
+- imdb_rating  
+- rt_score  
+- imdb_votes  
+- plex_rating  
+- decision  
+- reason  
+- misidentified_hint  
+- file  
+
+`report_filtered.csv` contiene solo DELETE + MAYBE ordenadas de peor a menos mala.
+
+---
+
+# 🧹 Borrado seguro
+
+Incluye:
+
+- DRY RUN  
+- Confirmación obligatoria (“BORRAR”)  
+- Log detallado  
+- Protección frente a errores
+
+---
+
+# ✨ Mejoras futuras
+
+- Integración con TMDb
+- CLI dedicada
+- Automatización programada
+
+---
+
+# 🎉 ¡Listo!
+
+Tu sistema Plex Movies Cleaner ahora es:
+
+✔ instalable  
+✔ modular  
+✔ profesional  
+✔ rápido  
+✔ reproducible  
+
+Para más información puedes revisar README_ARCHITECTURE.md

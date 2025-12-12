@@ -1,5 +1,6 @@
 # analiza_plex.py
 from typing import Dict, Any, List
+from pathlib import Path
 
 from backend.config import (
     OUTPUT_PREFIX,
@@ -16,6 +17,9 @@ from backend.reporting import (
 )
 from backend.analyzer import analyze_single_movie
 from backend.wiki_client import set_wiki_progress
+from backend import logger as _logger
+import tempfile
+import os
 
 
 # ============================================================
@@ -35,10 +39,11 @@ def update_progress(
 
     Solo se imprime cuando SILENT_MODE=False.
     """
-    if SILENT_MODE or total <= 0:
+    if total <= 0:
         return
 
-    print(f"({current}/{total}) {library_title}: {movie_title}")
+    # Use logger (it respects SILENT_MODE). This will be suppressed when SILENT_MODE=True.
+    _logger.info(f"({current}/{total}) {library_title}: {movie_title}")
 
 
 # ============================================================
@@ -58,14 +63,11 @@ def analyze_all_libraries():
 
     total_libs = len(libraries)
     if total_libs == 0:
-        print("No hay bibliotecas de películas para analizar (o todas excluidas).")
+        _logger.info("No hay bibliotecas de películas para analizar (o todas excluidas).", always=True)
         return
 
     # Siempre mostramos el listado de bibliotecas a analizar
-    print(
-        "Bibliotecas a analizar:",
-        [lib.title for lib in libraries],
-    )
+    _logger.info(f"Bibliotecas a analizar: {[lib.title for lib in libraries]}", always=True)
 
     all_rows: List[Dict[str, Any]] = []
     metadata_suggestions: List[Dict[str, Any]] = []
@@ -73,12 +75,12 @@ def analyze_all_libraries():
 
     for lib_idx, lib in enumerate(libraries, start=1):
         # Este mensaje SIEMPRE sale, independientemente de SILENT_MODE
-        print(f"Analizando biblioteca {lib_idx}/{total_libs}: {lib.title}")
+        _logger.info(f"Analizando biblioteca {lib_idx}/{total_libs}: {lib.title}", always=True)
 
         try:
             movies = lib.all()
         except Exception as e:
-            print(f"ERROR al obtener películas de {lib.title}: {e}")
+            _logger.error(f"ERROR al obtener películas de {lib.title}: {e}", always=True)
             continue
 
         total_movies = len(movies)
@@ -89,7 +91,7 @@ def analyze_all_libraries():
         for idx, movie in enumerate(movies, start=1):
             movie_title = getattr(movie, "title", "???")
 
-            # Progreso simple por consola (solo si SILENT_MODE=False)
+            # Progreso simple por consola (logger respetará SILENT_MODE)
             update_progress(idx, total_movies, lib.title, movie_title)
 
             # Contexto para que wiki_client pueda prefijar sus logs
@@ -104,8 +106,8 @@ def analyze_all_libraries():
                 if log_lines:
                     logs.extend(log_lines)
             except Exception as e:
-                print(
-                    f"ERROR analizando película '{getattr(movie, 'title', '???')}': {e}"
+                _logger.error(
+                    f"ERROR analizando película '{getattr(movie, 'title', '???')}': {e}", always=True
                 )
 
     # --------------------------------------------------------
@@ -129,11 +131,19 @@ def analyze_all_libraries():
         sugg_csv = f"{METADATA_OUTPUT_PREFIX}_suggestions.csv"
         write_suggestions_csv(sugg_csv, metadata_suggestions)
 
-    log_path = f"{METADATA_OUTPUT_PREFIX}_log.txt"
-    with open(log_path, "w", encoding="utf-8") as f:
-        for line in logs:
-            f.write(line + "\n")
-    print(f"Log de corrección metadata: {log_path}")
+    log_path = Path(f"{METADATA_OUTPUT_PREFIX}_log.txt")
+    # Escritura atómica del archivo de log
+    dirpath = log_path.parent
+    dirpath.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath)) as tf:
+            for line in logs:
+                tf.write(line + "\n")
+            temp_name = tf.name
+        os.replace(temp_name, str(log_path))
+        _logger.info(f"Log de corrección metadata: {log_path}", always=True)
+    except Exception as e:
+        _logger.error(f"Error escribiendo log de metadata en {log_path}: {e}", always=True)
 
 
 # ============================================================
