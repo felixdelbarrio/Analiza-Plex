@@ -1,5 +1,6 @@
 # backend/config.py
 import os
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -191,12 +192,22 @@ SILENT_MODE = os.getenv("SILENT_MODE", "false").lower() == "true"
 
 # ----------------------------------------------------
 # Logs de depuración equivalentes a los actuales
+# (controlados por SILENT_MODE)
 # ----------------------------------------------------
-print("DEBUG PLEX_BASEURL:", PLEX_BASEURL)
-print("DEBUG TOKEN:", "****" if PLEX_TOKEN else None)
-print("DEBUG EXCLUDE_LIBRARIES:", EXCLUDE_LIBRARIES)
-print("DEBUG METADATA_DRY_RUN:", METADATA_DRY_RUN)
-print("DEBUG METADATA_APPLY_CHANGES:", METADATA_APPLY_CHANGES)
-print("DEBUG OMDB_RETRY_EMPTY_CACHE:", OMDB_RETRY_EMPTY_CACHE)
-print("DEBUG SILENT_MODE:", SILENT_MODE)
-print("DEBUG IMDB_VOTES_BY_YEAR:", IMDB_VOTES_BY_YEAR)
+def _log_config_debug(label: str, value: Any) -> None:
+    """
+    Imprime configuración solo si SILENT_MODE=False.
+    Evita ensuciar la consola cuando se quiere ejecución silenciosa.
+    """
+    if not SILENT_MODE:
+        print(f"{label}: {value}")
+
+
+_log_config_debug("DEBUG PLEX_BASEURL", PLEX_BASEURL)
+_log_config_debug("DEBUG TOKEN", "****" if PLEX_TOKEN else None)
+_log_config_debug("DEBUG EXCLUDE_LIBRARIES", EXCLUDE_LIBRARIES)
+_log_config_debug("DEBUG METADATA_DRY_RUN", METADATA_DRY_RUN)
+_log_config_debug("DEBUG METADATA_APPLY_CHANGES", METADATA_APPLY_CHANGES)
+_log_config_debug("DEBUG OMDB_RETRY_EMPTY_CACHE", OMDB_RETRY_EMPTY_CACHE)
+_log_config_debug("DEBUG SILENT_MODE", SILENT_MODE)
+_log_config_debug("DEBUG IMDB_VOTES_BY_YEAR", IMDB_VOTES_BY_YEAR)

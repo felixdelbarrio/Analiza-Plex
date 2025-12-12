@@ -1,3 +1,4 @@
+# backend/omdb_client.py
 import os
 import json
 import time
@@ -10,22 +11,31 @@ from backend.config import (
     OMDB_RATE_LIMIT_WAIT_SECONDS,
     OMDB_RATE_LIMIT_MAX_RETRIES,
     OMDB_RETRY_EMPTY_CACHE,
+    SILENT_MODE,
 )
 
 # ============================================================
-#  googletrans opcional para traducir títulos ES->EN
+#                  LOGGING CONTROLADO POR SILENT_MODE
 # ============================================================
 
-try:
-    from googletrans import Translator  # pip install googletrans==4.0.0-rc1
 
-    _TRANSLATOR = Translator()
-    print(
-        "INFO: googletrans disponible, se podrá traducir títulos ES->EN si es necesario."
-    )
-except Exception:
-    _TRANSLATOR = None
-    print("INFO: googletrans NO disponible, se usarán títulos tal cual para OMDb.")
+def _log(msg: str) -> None:
+    """
+    Log normal para este módulo.
+    - Si SILENT_MODE = True: no imprime nada.
+    - Si SILENT_MODE = False: imprime por consola.
+    """
+    if SILENT_MODE:
+        return
+    print(msg)
+
+
+def _log_always(msg: str) -> None:
+    """
+    Log que SIEMPRE se imprime, independientemente de SILENT_MODE.
+    Lo usamos para mensajes críticos (ej: límite gratuito de OMDb).
+    """
+    print(msg)
 
 
 # ============================================================
@@ -100,21 +110,6 @@ def extract_year_from_omdb(omdb_data: Dict[str, Any]) -> Optional[int]:
     return None
 
 
-def translate_title_es_to_en(title: str) -> str:
-    if not title:
-        return title
-    if _TRANSLATOR is None:
-        return title
-    try:
-        t = _TRANSLATOR.translate(title, src="es", dest="en")
-        if t and t.text:
-            return t.text
-        return title
-    except Exception as e:
-        print(f"WARNING: error traduciendo título '{title}': {e}")
-        return title
-
-
 # ============================================================
 #                      CACHE OMDb LOCAL
 # ============================================================
@@ -124,16 +119,8 @@ CACHE_FILE = "omdb_cache.json"
 
 def load_cache() -> Dict[str, Any]:
     """
-    Carga la caché de OMDb desde disco y mantiene compatibilidad con el formato antiguo.
-
-    Formato antiguo de claves (antes del refactor):
-      '{"i": "tt0103639", "type": "movie"}'
-      '{"t": "Aladdin", "type": "movie", "y": "1992"}'
-
-    Formato nuevo de claves:
-      'tt0103639'
-      'title:1992:aladdin'
-      'title::aladdin'
+    Carga la caché de OMDb desde disco y mantiene compatibilidad
+    con el formato antiguo.
     """
     if not os.path.exists(CACHE_FILE):
         return {}
@@ -147,7 +134,6 @@ def load_cache() -> Dict[str, Any]:
     if not isinstance(raw_cache, dict):
         return {}
 
-    # Partimos del contenido tal cual
     normalized: Dict[str, Any] = dict(raw_cache)
 
     for key, value in list(raw_cache.items()):
@@ -155,34 +141,34 @@ def load_cache() -> Dict[str, Any]:
             continue
 
         stripped = key.strip()
-        # Solo intentamos parsear como JSON si parece un dict serializado
-        if not (stripped.startswith("{") and stripped.endswith("}")):
-            continue
 
-        try:
-            params = json.loads(stripped)
-        except Exception:
-            continue
+        # Si la clave parece un JSON antiguo → convertir
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                params = json.loads(stripped)
+            except Exception:
+                continue
 
-        if not isinstance(params, dict):
-            continue
+            if not isinstance(params, dict):
+                continue
 
-        imdb_id = params.get("i")
-        title = params.get("t")
-        year = params.get("y")
+            imdb_id = params.get("i")
+            title = params.get("t")
+            year = params.get("y")
 
-        canon_key = None
-        if imdb_id:
-            canon_key = imdb_id
-        elif title:
-            title_low = str(title).lower()
-            if year:
-                canon_key = f"title:{year}:{title_low}"
+            if imdb_id:
+                canon_key = imdb_id
+            elif title:
+                title_low = str(title).lower()
+                if year:
+                    canon_key = f"title:{year}:{title_low}"
+                else:
+                    canon_key = f"title::{title_low}"
             else:
-                canon_key = f"title::{title_low}"
+                canon_key = None
 
-        if canon_key and canon_key not in normalized:
-            normalized[canon_key] = value
+            if canon_key and canon_key not in normalized:
+                normalized[canon_key] = value
 
     return normalized
 
@@ -194,9 +180,10 @@ def save_cache(cache: Dict[str, Any]) -> None:
 
 omdb_cache = load_cache()
 
-# Flags globales para controlar OMDb
+# Flags globales
 OMDB_DISABLED = False
-OMDB_DISABLED_NOTICE_SHOWN = False  # para no spamear el mensaje
+OMDB_DISABLED_NOTICE_SHOWN = False
+OMDB_RATE_LIMIT_NOTICE_SHOWN = False  # para el aviso de límite gratuito
 
 
 # ============================================================
@@ -220,18 +207,11 @@ def extract_ratings_from_omdb(
     return imdb_rating, imdb_votes, rt_score
 
 
-def extract_ratings_from_omdb_detail(
-    data: Optional[Dict[str, Any]]
-) -> Tuple[Optional[float], Optional[int], Optional[int]]:
-    """
-    Alias que mantenemos por compatibilidad con el backend actual.
-    """
-    return extract_ratings_from_omdb(data)
-
-
 def is_omdb_data_empty_for_ratings(data: Optional[Dict[str, Any]]) -> bool:
     """
-    Devuelve True si el dict OMDb no tiene ratings ni votos ni RT.
+    Devuelve True si el dict OMDb no tiene rating IMDb, ni votos,
+    ni puntuación de Rotten Tomatoes. Se usa para saber si una
+    entrada de caché está "vacía" a efectos de scoring.
     """
     if not data:
         return True
@@ -250,14 +230,10 @@ def is_omdb_data_empty_for_ratings(data: Optional[Dict[str, Any]]) -> bool:
 
 def omdb_request(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Realiza una petición directa a OMDb (sin cache) con parámetros dados.
-    Devuelve:
-      - dict con el JSON devuelto por OMDb (aunque sea Error/Response=False)
-      - None en caso de error de red / respuesta no JSON
-    NO modifica OMDB_DISABLED; la política se decide en omdb_query_with_cache.
+    Petición directa sin cache.
     """
     if OMDB_API_KEY is None:
-        print("ERROR: OMDB_API_KEY no configurada, no se puede usar OMDb.")
+        _log("ERROR: OMDB_API_KEY no configurada.")
         return None
 
     if OMDB_DISABLED:
@@ -270,103 +246,112 @@ def omdb_request(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     try:
         resp = requests.get(base_url, params=params, timeout=10)
     except Exception as e:
-        print(f"WARNING: error al hacer request a OMDb: {e}")
+        _log(f"WARNING: error al conectar con OMDb: {e}")
         return None
 
     try:
         data_obj = resp.json()
         if isinstance(data_obj, dict):
             return data_obj
-        print("WARNING: OMDb devolvió un JSON no dict.")
+        _log("WARNING: OMDb devolvió JSON no dict.")
         return None
     except Exception as e:
-        print(f"WARNING: respuesta OMDb no es JSON válido: {e}")
+        _log(f"WARNING: OMDb no devolvió JSON válido: {e}")
         return None
 
 
 def omdb_query_with_cache(cache_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Envuelve omdb_request con caché, reintentos y política de desactivación.
-    Reglas:
-      - Respeta OMDB_RETRY_EMPTY_CACHE.
-      - Reintenta hasta OMDB_RATE_LIMIT_MAX_RETRIES, esperando
-        OMDB_RATE_LIMIT_WAIT_SECONDS entre intentos.
-      - Después de agotar reintentos, desactiva OMDb para toda la ejecución
-        (OMDB_DISABLED=True) y no vuelve a hacer peticiones.
-      - Una vez desactivado, SOLO usa la caché y NO muestra más mensajes.
+    Gestiona:
+    - Cache OMDb.
+    - OMDB_RETRY_EMPTY_CACHE.
+    - Reintentos por rate limit.
+    - Desactivación global de OMDb.
+
+    Además:
+    - Cuando OMDb responde "Request limit reached!", mostramos SIEMPRE
+      un aviso (una sola vez) y esperamos OMDB_RATE_LIMIT_WAIT_SECONDS
+      antes de seguir.
     """
-    global OMDB_DISABLED, OMDB_DISABLED_NOTICE_SHOWN
+    global OMDB_DISABLED, OMDB_DISABLED_NOTICE_SHOWN, OMDB_RATE_LIMIT_NOTICE_SHOWN
 
-    # Si OMDb ya está desactivado: no hacemos peticiones nuevas
+    # Si OMDb está desactivado → solo cache
     if OMDB_DISABLED:
-        if cache_key in omdb_cache:
-            return omdb_cache[cache_key]
-        # silencioso: no mostramos nada más
-        return None
+        return omdb_cache.get(cache_key)
 
-    # Caché normal
+    # Cache hit (normal, sin reintento)
     if cache_key in omdb_cache and not OMDB_RETRY_EMPTY_CACHE:
         return omdb_cache[cache_key]
 
-    # Caché con reintentos para entradas "vacías"
+    # Cache hit pero se quiere volver a intentar porque estaba "vacía" de ratings
     if cache_key in omdb_cache and OMDB_RETRY_EMPTY_CACHE:
-        old_data = omdb_cache[cache_key]
-        if not is_omdb_data_empty_for_ratings(old_data):
-            return old_data
+        old = omdb_cache[cache_key]
+        if not is_omdb_data_empty_for_ratings(old):
+            # ya tiene algún rating/votos/RT → usarla y no llamar a OMDb
+            return old
         else:
-            print(
-                f"INFO: reintentando OMDb para clave {cache_key} porque la caché no tiene ratings."
-            )
+            _log(f"INFO: reintentando OMDb para {cache_key} (cache sin ratings).")
 
+    # Reintentos reales a la API
     retries = 0
     had_failure = False
 
     while retries <= OMDB_RATE_LIMIT_MAX_RETRIES:
         data = omdb_request(params)
 
-        # Error "duro": sin datos (network, timeout, etc.)
         if data is None:
             had_failure = True
+
         else:
-            # Miramos errores de OMDb en el JSON
             error_msg = data.get("Error")
+
+            # ----------------------------
+            # Caso: límite gratuito OMDb
+            # ----------------------------
             if error_msg == "Request limit reached!":
-                # Esto también cuenta como fallo, pero respetando reintentos
                 had_failure = True
-            else:
-                # Tenemos una respuesta "normal" (Response True o False)
-                if data.get("Response") == "True":
-                    # Éxito -> guardamos en caché y devolvemos
-                    omdb_cache[cache_key] = data
-                    save_cache(omdb_cache)
-                    return data
-                else:
-                    # Error "normal" (por ejemplo Movie not found) -> cache y devolvemos
-                    omdb_cache[cache_key] = data
-                    save_cache(omdb_cache)
-                    return data
 
-        # Si llegamos aquí, no tenemos respuesta utilizable todavía
+                if not OMDB_RATE_LIMIT_NOTICE_SHOWN:
+                    _log_always(
+                        "AVISO: límite de llamadas gratuitas de OMDb alcanzado. "
+                        f"Esperando {OMDB_RATE_LIMIT_WAIT_SECONDS} segundos antes de continuar..."
+                    )
+                    OMDB_RATE_LIMIT_NOTICE_SHOWN = True
+
+                    # Espera ÚNICA configurable desde el .env
+                    time.sleep(OMDB_RATE_LIMIT_WAIT_SECONDS)
+
+                # seguimos el bucle SIN más sleeps genéricos
+                retries += 1
+                continue
+
+            # ----------------------------
+            # Caso normal con datos (OK o 'Movie not found')
+            # ----------------------------
+            if data.get("Response") == "True":
+                omdb_cache[cache_key] = data
+                save_cache(omdb_cache)
+                return data
+
+            # Error no fatal (por ejemplo Movie not found) → almacenar y devolver
+            omdb_cache[cache_key] = data
+            save_cache(omdb_cache)
+            return data
+
         retries += 1
-        if retries <= OMDB_RATE_LIMIT_MAX_RETRIES:
-            # Mensaje de reintento mientras aún hay intentos
-            print(
-                f"INFO: fallo consultando OMDb (intento {retries}/{OMDB_RATE_LIMIT_MAX_RETRIES}); "
-                f"reintentando en {OMDB_RATE_LIMIT_WAIT_SECONDS} segundos..."
-            )
-            time.sleep(OMDB_RATE_LIMIT_WAIT_SECONDS)
 
-    # Hemos agotado los reintentos
+    # ------------------------------------------------------------------
+    # Si agotamos todos los reintentos → desactivamos OMDb para la sesión
+    # ------------------------------------------------------------------
     if had_failure:
         OMDB_DISABLED = True
         if not OMDB_DISABLED_NOTICE_SHOWN:
-            print(
-                "ERROR: OMDb desactivado para esta ejecución tras agotar "
-                f"{OMDB_RATE_LIMIT_MAX_RETRIES} reintentos."
+            _log_always(
+                "ERROR: OMDb desactivado para esta ejecución tras fallos consecutivos. "
+                "A partir de ahora se usará únicamente la caché local."
             )
             OMDB_DISABLED_NOTICE_SHOWN = True
 
-    # Devolvemos lo que haya en caché (si algo se hubiera guardado antes)
     return omdb_cache.get(cache_key)
 
 
@@ -391,13 +376,14 @@ def search_omdb_by_title_and_year(
         return None
 
     cache_key = f"title:{year}:{title.lower()}" if year else f"title::{title.lower()}"
-
     params = {"t": title, "type": "movie", "plot": "short"}
+
     if year:
         params["y"] = str(year)
 
     data = omdb_query_with_cache(cache_key, params)
 
+    # Reintento sin año si OMDb dice "Movie not found!"
     if data and data.get("Response") == "False" and data.get("Error") == "Movie not found!":
         cache_key_no_year = f"title::{title.lower()}"
         params_no_year = dict(params)
@@ -411,36 +397,30 @@ def search_omdb_with_candidates(
     plex_title: str, plex_year: Optional[int]
 ) -> Optional[Dict[str, Any]]:
     """
-    Búsqueda "inteligente" usando título Plex, año y candidatos de OMDb.
-    Puede usar traducción ES->EN si googletrans está disponible.
+    Último recurso cuando:
+      - No se obtuvo IMDb ID
+      - No se encuentra título exacto
+
+    Estrategia:
+      1) Buscar por título+year.
+      2) Si falla, usar 's=' de OMDb y elegir el mejor candidato por heurística.
     """
-    title = plex_title or ""
-    title = title.strip()
+    title = plex_title.strip() if plex_title else ""
     if not title:
         return None
 
+    # 1) búsqueda directa título+year
     data = search_omdb_by_title_and_year(title, plex_year)
     if data and data.get("Response") == "True":
         return data
 
-    if _TRANSLATOR is not None:
-        translated_title = translate_title_es_to_en(title)
-        if translated_title.lower() != title.lower():
-            print(
-                "INFO: intentando búsqueda OMDb con título traducido "
-                f"'{translated_title}' (desde '{title}')."
-            )
-            data = search_omdb_by_title_and_year(translated_title, plex_year)
-            if data and data.get("Response") == "True":
-                return data
-
+    # 2) búsqueda por 's' de OMDb (búsqueda libre)
     base_url = "https://www.omdbapi.com/"
     params = {"apikey": OMDB_API_KEY, "s": title, "type": "movie"}
+
     try:
         resp = requests.get(base_url, params=params, timeout=10)
-        if resp.status_code != 200:
-            return None
-        data_s = resp.json()
+        data_s = resp.json() if resp.status_code == 200 else None
     except Exception:
         data_s = None
 
@@ -448,20 +428,28 @@ def search_omdb_with_candidates(
         return None
 
     results = data_s.get("Search") or []
-    results = results if isinstance(results, list) else []
+    if not isinstance(results, list):
+        return None
 
-    def score_candidate(
-        plex_title: str, plex_year: Optional[int], cand: Dict[str, Any]
-    ) -> float:
-        cand_year = None
-        try:
-            cy = cand.get("Year")
-            if cy and cy != "N/A":
-                cand_year = int(cy[:4])
-        except Exception:
-            pass
-
+    # scoring básico de candidatos
+    def score_candidate(cand: Dict[str, Any]) -> float:
         score = 0.0
+
+        ctit = (cand.get("Title") or "").lower()
+        ptit = title.lower()
+
+        if ptit == ctit:
+            score += 2.0
+        elif ctit in ptit or ptit in ctit:
+            score += 1.0
+
+        cand_year = None
+        cy = cand.get("Year")
+        if cy and cy != "N/A":
+            try:
+                cand_year = int(cy[:4])
+            except Exception:
+                pass
 
         if plex_year and cand_year:
             if plex_year == cand_year:
@@ -469,35 +457,18 @@ def search_omdb_with_candidates(
             elif abs(plex_year - cand_year) <= 1:
                 score += 1.0
 
-        ctit = (cand.get("Title") or "").lower()
-        ptit = (plex_title or "").lower()
-
-        if ctit == ptit:
-            score += 2.0
-        elif ctit in ptit or ptit in ctit:
-            score += 1.0
-
-        common = 0
-        for word in ptit.split():
-            if word and word in ctit:
-                common += 1
-        score += 0.1 * common
+        # coincidencia parcial por palabras
+        common = sum(1 for w in ptit.split() if w and w in ctit)
+        score += common * 0.1
 
         return score
 
-    best_cand = None
-    best_score = -1.0
-
-    for cand in results:
-        s = score_candidate(title, plex_year, cand)
-        if s > best_score:
-            best_score = s
-            best_cand = cand
-
-    if not best_cand:
+    # elegir el mejor candidato
+    best = max(results, key=lambda c: score_candidate(c), default=None)
+    if not best:
         return None
 
-    imdb_id = best_cand.get("imdbID")
+    imdb_id = best.get("imdbID")
     if not imdb_id:
         return None
 

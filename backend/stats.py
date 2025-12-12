@@ -13,8 +13,20 @@ from backend.config import (
     RATING_MIN_TITLES_FOR_AUTO,
     IMDB_KEEP_MIN_RATING,
     IMDB_DELETE_MAX_RATING,
+    SILENT_MODE,  # 👈 para controlar logs
 )
 from backend.omdb_client import omdb_cache, parse_imdb_rating_from_omdb
+
+
+# -------------------------------------------------------------------
+# Pequeño helper para logs controlados por SILENT_MODE
+# -------------------------------------------------------------------
+def _log_stats(msg: str) -> None:
+    """
+    Logs del módulo stats: solo se muestran si SILENT_MODE es False.
+    """
+    if not SILENT_MODE:
+        print(msg)
 
 
 # -------------------------------------------------------------------
@@ -44,7 +56,7 @@ def _compute_global_imdb_mean_from_cache_raw() -> Tuple[Optional[float], int]:
     entradas que tengan un rating válido. Devuelve (media, n_validos).
     """
     if not isinstance(omdb_cache, dict) or not omdb_cache:
-        print("INFO [stats] omdb_cache vacío o no dict; sin ratings IMDb.")
+        _log_stats("INFO [stats] omdb_cache vacío o no dict; sin ratings IMDb.")
         return None, 0
 
     ratings: List[float] = []
@@ -56,7 +68,7 @@ def _compute_global_imdb_mean_from_cache_raw() -> Tuple[Optional[float], int]:
             ratings.append(float(r))
 
     if not ratings:
-        print("INFO [stats] omdb_cache sin ratings IMDb válidos.")
+        _log_stats("INFO [stats] omdb_cache sin ratings IMDb válidos.")
         return None, 0
 
     return sum(ratings) / len(ratings), len(ratings)
@@ -77,7 +89,7 @@ def get_global_imdb_mean_from_cache() -> float:
         _GLOBAL_IMDB_MEAN_FROM_CACHE = float(mean_cache)
         _GLOBAL_IMDB_MEAN_SOURCE = f"omdb_cache (n={count})"
         _GLOBAL_IMDB_MEAN_COUNT = count
-        print(
+        _log_stats(
             f"INFO [stats] Media global IMDb desde omdb_cache = "
             f"{_GLOBAL_IMDB_MEAN_FROM_CACHE:.3f} (n={count})"
         )
@@ -90,7 +102,7 @@ def get_global_imdb_mean_from_cache() -> float:
         _GLOBAL_IMDB_MEAN_FROM_CACHE = BAYES_GLOBAL_MEAN_DEFAULT
         _GLOBAL_IMDB_MEAN_SOURCE = f"default {BAYES_GLOBAL_MEAN_DEFAULT}"
         _GLOBAL_IMDB_MEAN_COUNT = count
-        print(
+        _log_stats(
             f"INFO [stats] Usando BAYES_GLOBAL_MEAN_DEFAULT={BAYES_GLOBAL_MEAN_DEFAULT} porque {reason}"
         )
 
@@ -122,7 +134,6 @@ def compute_global_imdb_mean_from_df(df_all: pd.DataFrame) -> Optional[float]:
     if "imdb_rating" not in df_all.columns:
         return None
 
-    # Convertimos a numérico y soltamos NaN
     ratings = pd.to_numeric(df_all["imdb_rating"], errors="coerce").dropna()
     if ratings.empty:
         return None
@@ -153,7 +164,7 @@ def _load_imdb_ratings_list_from_cache() -> Tuple[List[float], int]:
     _RATINGS_COUNT = len(ratings)
 
     if _RATINGS_COUNT == 0:
-        print("INFO [stats] omdb_cache sin ratings válidos para auto-umbrales.")
+        _log_stats("INFO [stats] omdb_cache sin ratings válidos para auto-umbrales.")
 
     return _RATINGS_LIST, _RATINGS_COUNT
 
@@ -195,7 +206,7 @@ def get_auto_keep_rating_threshold() -> float:
         val = _percentile(ratings, AUTO_KEEP_RATING_PERCENTILE)
         if val is not None:
             _AUTO_KEEP_RATING_THRESHOLD = float(val)
-            print(
+            _log_stats(
                 f"INFO [stats] IMDB_KEEP_MIN_RATING auto-ajustada: "
                 f"{val:.3f} (p={AUTO_KEEP_RATING_PERCENTILE}, n={n})"
             )
@@ -203,7 +214,7 @@ def get_auto_keep_rating_threshold() -> float:
 
     # Fallback
     _AUTO_KEEP_RATING_THRESHOLD = IMDB_KEEP_MIN_RATING
-    print(
+    _log_stats(
         f"INFO [stats] Fallback IMDB_KEEP_MIN_RATING={IMDB_KEEP_MIN_RATING} "
         f"(n={n} < RATING_MIN_TITLES_FOR_AUTO={RATING_MIN_TITLES_FOR_AUTO})"
     )
@@ -228,7 +239,7 @@ def get_auto_delete_rating_threshold() -> float:
         val = _percentile(ratings, AUTO_DELETE_RATING_PERCENTILE)
         if val is not None:
             _AUTO_DELETE_RATING_THRESHOLD = float(val)
-            print(
+            _log_stats(
                 f"INFO [stats] IMDB_DELETE_MAX_RATING auto-ajustada: "
                 f"{val:.3f} (p={AUTO_DELETE_RATING_PERCENTILE}, n={n})"
             )
@@ -236,7 +247,7 @@ def get_auto_delete_rating_threshold() -> float:
 
     # Fallback
     _AUTO_DELETE_RATING_THRESHOLD = IMDB_DELETE_MAX_RATING
-    print(
+    _log_stats(
         f"INFO [stats] Fallback IMDB_DELETE_MAX_RATING={IMDB_DELETE_MAX_RATING} "
         f"(n={n} < RATING_MIN_TITLES_FOR_AUTO={RATING_MIN_TITLES_FOR_AUTO})"
     )

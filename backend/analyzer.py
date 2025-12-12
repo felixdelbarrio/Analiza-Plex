@@ -4,29 +4,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from backend.decision_logic import detect_misidentified
 from backend.metadata_fix import generate_metadata_suggestions_row
-from backend.omdb_client import (
-    extract_ratings_from_omdb,
-    search_omdb_by_imdb_id,
-    search_omdb_with_candidates,
-)
+from backend.omdb_client import extract_ratings_from_omdb
 from backend.plex_client import (
     get_best_search_title,
     get_imdb_id_from_movie,
     get_movie_file_info,
 )
 from backend.scoring import decide_action
-from backend.wiki_client import find_movie_in_wikidata
+from backend.wiki_client import get_movie_record
 
 
 def analyze_single_movie(
     movie,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], List[str]]:
-    """
-    Analiza una película individual de Plex y devuelve:
-      - row: dict con datos para *_all.csv
-      - meta_sugg: dict con sugerencias de metadata (o None)
-      - logs: mensajes para el metadata_log.txt
-    """
+
     logs: List[str] = []
 
     library = getattr(movie, "librarySectionTitle", None)
@@ -37,97 +28,69 @@ def analyze_single_movie(
     guid = getattr(movie, "guid", None)
     thumb = getattr(movie, "thumb", None)
 
-    # Info de archivo
+    # 1. Info de archivo
     file_path, file_size = get_movie_file_info(movie)
 
-    # ----------------------------------------------------
-    # 1) ID IMDb inicial (Plex: todos los GUID posibles)
-    # ----------------------------------------------------
-    imdb_id = get_imdb_id_from_movie(movie)
+    # 2. Intento inicial de IMDb ID desde Plex
+    imdb_id_hint = get_imdb_id_from_movie(movie)
+    search_title = get_best_search_title(movie)
 
-    # ----------------------------------------------------
-    # 2) Si Plex no trae imdb_id, intentamos Wikipedia/Wikidata
-    # ----------------------------------------------------
-    wiki_info: Optional[Dict[str, Any]] = None
-
-    if not imdb_id:
-        search_title = get_best_search_title(movie)
-        wiki_info = find_movie_in_wikidata(search_title, year, language="en")
-
-        if wiki_info and wiki_info.get("imdb_id"):
-            imdb_id = wiki_info["imdb_id"]
-            logs.append(
-                f"[WIKI] IMDb ID obtenido vía Wikidata para "
-                f"'{search_title}' ({year}): {imdb_id} "
-                f"(wikidata_id={wiki_info.get('wikidata_id')}, "
-                f"wikipedia_title='{wiki_info.get('wikipedia_title')}')"
-            )
-        elif wiki_info:
-            logs.append(
-                f"[WIKI] Encontrada página en Wikipedia/Wikidata para "
-                f"'{search_title}' ({year}), pero sin imdb_id (wikidata_id={wiki_info.get('wikidata_id')})"
-            )
-
-    # ----------------------------------------------------
-    # 3) Búsqueda OMDb (priorizando IMDb ID si lo tenemos)
-    # ----------------------------------------------------
-    if imdb_id:
-        omdb_data = search_omdb_by_imdb_id(imdb_id)
-    else:
-        search_title = get_best_search_title(movie)
-        omdb_data = search_omdb_with_candidates(search_title, year)
-
-    # Si OMDb tiene imdbID y difiere / falta, lo usamos para rellenar/corregir.
-    if omdb_data:
-        omdb_imdb_id = omdb_data.get("imdbID")
-        if omdb_imdb_id and omdb_imdb_id != imdb_id:
-            logs.append(
-                f"[OMDB] imdbID corregido/rellenado desde OMDb: "
-                f"{imdb_id} -> {omdb_imdb_id}"
-            )
-            imdb_id = omdb_imdb_id
-
-    # ----------------------------------------------------
-    # 4) Ratings y scoring
-    # ----------------------------------------------------
-    imdb_rating, imdb_votes, rt_score = extract_ratings_from_omdb(omdb_data)
-
-    # Decisión KEEP/MAYBE/DELETE/UNKNOWN (usando también el año para votos dinámicos / bayes)
-    decision, reason = decide_action(imdb_rating, imdb_votes, rt_score, year)
-
-    # ----------------------------------------------------
-    # 5) Posible misidentificación
-    # ----------------------------------------------------
-    misidentified_hint = detect_misidentified(
-        title, year, omdb_data, imdb_rating, imdb_votes, rt_score
+    # 3. MASTER RECORD = wiki_cache + wikidata + OMDb
+    omdb_like_data = get_movie_record(
+        title=search_title,
+        year=year,
+        imdb_id_hint=imdb_id_hint,
     )
-    if misidentified_hint:
-        logs.append(
-            f"[MISIDENTIFIED] {library} / {title} ({year}): {misidentified_hint}"
+
+    # Si no existe ningún dato útil
+    if not omdb_like_data:
+        imdb_rating = None
+        imdb_votes = None
+        rt_score = None
+        imdb_id = imdb_id_hint
+        decision = "UNKNOWN"
+        reason = "Sin datos"
+        misidentified_hint = ""
+        meta_sugg = None
+        poster_url = None
+        trailer_url = None
+        omdb_json_str = None
+        wiki_meta = {}
+    else:
+        imdb_id = omdb_like_data.get("imdbID") or imdb_id_hint
+        wiki_meta = omdb_like_data.get("__wiki") or {}
+
+        imdb_rating, imdb_votes, rt_score = extract_ratings_from_omdb(omdb_like_data)
+        decision, reason = decide_action(imdb_rating, imdb_votes, rt_score, year)
+
+        misidentified_hint = detect_misidentified(
+            title, year, omdb_like_data, imdb_rating, imdb_votes, rt_score
         )
+        if misidentified_hint:
+            logs.append(
+                f"[MISIDENTIFIED] {library} / {title} ({year}): {misidentified_hint}"
+            )
 
-    # ----------------------------------------------------
-    # 6) Sugerencias de metadata
-    # ----------------------------------------------------
-    meta_sugg = generate_metadata_suggestions_row(movie, omdb_data)
-    if meta_sugg:
-        logs.append(
-            f"[METADATA_SUGG] {library} / {title} ({year}): "
-            f"{meta_sugg.get('suggestions_json')}"
-        )
+        meta_sugg = generate_metadata_suggestions_row(movie, omdb_like_data)
+        if meta_sugg:
+            logs.append(
+                f"[METADATA_SUGG] {library} / {title} ({year}): "
+                f"{meta_sugg.get('suggestions_json')}"
+            )
 
-    # ----------------------------------------------------
-    # 7) Extras OMDb (poster y trailer si existiera)
-    # ----------------------------------------------------
-    poster_url = None
-    trailer_url = None
-    if omdb_data:
-        poster_url = omdb_data.get("Poster")
-        # Si en el futuro quisieras trailer_url de otro sitio, se rellenaría aquí.
+        poster_url = omdb_like_data.get("Poster")
+        trailer_url = omdb_like_data.get("Website")
+        omdb_json_str = json.dumps(omdb_like_data, ensure_ascii=False)
 
-    # ----------------------------------------------------
-    # 8) Construcción de la fila para *_all.csv
-    # ----------------------------------------------------
+        if wiki_meta:
+            logs.append(
+                f"[WIKI] Enriquecido desde Wikipedia/Wikidata: "
+                f"wikidata_id={wiki_meta.get('wikidata_id')}, "
+                f"wikipedia_title='{wiki_meta.get('wikipedia_title')}', "
+                f"lang={wiki_meta.get('source_lang')}"
+            )
+
+    # Construcción final de fila CSV
     row: Dict[str, Any] = {
         "library": library,
         "title": title,
@@ -147,11 +110,9 @@ def analyze_single_movie(
         "poster_url": poster_url,
         "trailer_url": trailer_url,
         "thumb": thumb,
-        "omdb_json": json.dumps(omdb_data, ensure_ascii=False) if omdb_data else None,
-        # Campos opcionales de depuración sobre Wikipedia/Wikidata
-        "wiki_imdb_id": wiki_info.get("imdb_id") if wiki_info else None,
-        "wikidata_id": wiki_info.get("wikidata_id") if wiki_info else None,
-        "wikipedia_title": wiki_info.get("wikipedia_title") if wiki_info else None,
+        "omdb_json": omdb_json_str,
+        "wikidata_id": wiki_meta.get("wikidata_id"),
+        "wikipedia_title": wiki_meta.get("wikipedia_title"),
     }
 
     return row, meta_sugg, logs
