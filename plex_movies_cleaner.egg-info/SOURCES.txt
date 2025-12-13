@@ -26,6 +26,9 @@ plex_movies_cleaner.egg-info/SOURCES.txt
 plex_movies_cleaner.egg-info/dependency_links.txt
 plex_movies_cleaner.egg-info/requires.txt
 plex_movies_cleaner.egg-info/top_level.txt
+tests/test_analyzer.py
+tests/test_omdb_client.py
+tests/test_plex_client.py
 tests/test_reporting.py
 tests/test_scoring.py
 tests/test_stats.py
