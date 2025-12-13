@@ -14,7 +14,7 @@ Requires-Dist: googletrans==4.0.0-rc1
 Requires-Dist: pandas
 Requires-Dist: streamlit
 Requires-Dist: altair
-Requires-Dist: st-aggrid
+Requires-Dist: streamlit-aggrid
 Provides-Extra: dev
 Dynamic: author
 Dynamic: description

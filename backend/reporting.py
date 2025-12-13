@@ -133,6 +133,9 @@ def write_interactive_html(path: str, rows: List[Dict[str, Any]]) -> None:
     rows_json = json.dumps(processed_rows, ensure_ascii=False)
 
     # Plantilla HTML con placeholder para rows_json — evita f-strings y conflictos
+    # Los datos JSON se insertan en una etiqueta <script type="application/json">
+    # y luego se parsean en JS con JSON.parse(...) para evitar que cadenas
+    # que contengan '</script>' rompan la página.
     html_template = """<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -280,9 +283,10 @@ table.dataTable tbody tr {
   </div>
 </div>
 
+<script id="rows-data" type="application/json">__ROWS_JSON__</script>
 <script>
 // Datos generados por Python
-const rows = __ROWS_JSON__;
+const rows = JSON.parse(document.getElementById("rows-data").textContent);
 
 // Construcción de tabla
 const tableData = rows.map(r => {
@@ -396,7 +400,8 @@ $(document).ready(function() {
     dirpath = pathp.parent
     dirpath.mkdir(parents=True, exist_ok=True)
     try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath)) as tf:
+        # Escritura atómica del HTML
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath), newline="") as tf:
             tf.write(html)
             temp_name = tf.name
         os.replace(temp_name, str(pathp))

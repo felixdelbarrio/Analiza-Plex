@@ -26,3 +26,15 @@ def test_write_interactive_html_creates_file(tmp_path: Path):
     text = out.read_text(encoding="utf-8")
     assert "Plex Movies Cleaner" in text
     assert "Sample Movie" in text
+    # El JSON de filas debe estar presente en una etiqueta <script type="application/json">
+    assert '<script id="rows-data" type="application/json">' in text
+    # Extraemos y parseamos el JSON para comprobar estructura mínima
+    start = text.find('<script id="rows-data" type="application/json">')
+    assert start != -1
+    start = text.find('>', start) + 1
+    end = text.find('</script>', start)
+    rows_json = text[start:end].strip()
+    import json
+    parsed = json.loads(rows_json)
+    assert isinstance(parsed, list)
+    assert parsed[0]["title"] == "Sample Movie"
