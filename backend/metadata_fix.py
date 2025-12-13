@@ -1,17 +1,27 @@
 import json
+import re
 from typing import Optional, Dict, Any, List
 
+from backend import logger as _logger
 from backend.config import METADATA_DRY_RUN, METADATA_APPLY_CHANGES
 
 
 def _normalize_title(title: Optional[str]) -> Optional[str]:
-    """Normaliza un título para comparaciones sencillas."""
+    """Normaliza un título para comparaciones sencillas.
+
+    - Convierte a minúsculas, elimina puntuación y colapsa espacios.
+    - Devuelve None si el título es vacío o None.
+    """
     if title is None:
         return None
     t = str(title).strip()
     if not t:
         return None
-    return t
+    t = t.lower()
+    # eliminar caracteres no alfanuméricos dejando espacios
+    t = re.sub(r"[^0-9a-záéíóúüñ\s]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t or None
 
 
 def _normalize_year(year: Optional[Any]) -> Optional[int]:
@@ -99,8 +109,10 @@ def generate_metadata_suggestions_row(
         "omdb_title": omdb_title,
         "omdb_year": omdb_year,
         "action": action,
-        "suggestions_json": json.dumps(suggestions, ensure_ascii=False),
+        "suggestions_json": json.dumps(suggestions, ensure_ascii=False, separators=(",", ":")),
     }
+
+    _logger.debug(f"Generated metadata suggestion for {library} / {plex_title}: {suggestions}")
 
     return row
 
@@ -127,34 +139,45 @@ def apply_metadata_suggestion(
     plex_guid = getattr(movie, "guid", None)
 
     suggestions_json = suggestion_row.get("suggestions_json")
-    try:
-        suggestions = json.loads(suggestions_json) if suggestions_json else {}
-    except Exception:
-        suggestions = {}
+    suggestions: Dict[str, Any]
+    if isinstance(suggestions_json, dict):
+        suggestions = suggestions_json
+    else:
+        try:
+            suggestions = json.loads(suggestions_json) if suggestions_json else {}
+        except Exception:
+            suggestions = {}
 
     new_title = suggestions.get("new_title")
     new_year = suggestions.get("new_year")
 
     header = f"[APPLY_METADATA] {library} / {plex_title} ({plex_year}) guid={plex_guid}"
     logs.append(header)
+    _logger.info(header)
 
     if not suggestions:
-        logs.append("  - No hay sugerencias en suggestions_json.")
+        msg = "  - No hay sugerencias en suggestions_json."
+        logs.append(msg)
+        _logger.debug(msg)
         return logs
 
     # Modo solo log (por defecto) si no se permiten cambios
     if not METADATA_APPLY_CHANGES:
-        logs.append(
+        msg = (
             f"  - METADATA_APPLY_CHANGES=False → solo log. "
             f"Sugerencias: title={new_title!r}, year={new_year!r}"
         )
+        logs.append(msg)
+        _logger.info(msg)
         return logs
 
     if METADATA_DRY_RUN:
-        logs.append(
+        msg = (
             f"  - METADATA_DRY_RUN=True → NO se aplican cambios realmente. "
             f"Sugerencias: title={new_title!r}, year={new_year!r}"
         )
+        logs.append(msg)
+        _logger.info(msg)
         return logs
 
     # Intento de aplicar cambios reales
@@ -162,27 +185,48 @@ def apply_metadata_suggestion(
         changed_fields = []
 
         if new_title is not None and new_title != plex_title:
-            setattr(movie, "title", new_title)
-            changed_fields.append("title")
+            try:
+                setattr(movie, "title", new_title)
+                changed_fields.append("title")
+            except Exception as e:
+                _logger.warning(f"No se pudo setear title en movie: {e}")
 
         if new_year is not None and new_year != plex_year:
             try:
-                setattr(movie, "year", int(new_year))
+                int_year = int(new_year)
+                try:
+                    setattr(movie, "year", int_year)
+                except Exception:
+                    # Algunos objetos no aceptan int directamente
+                    setattr(movie, "year", new_year)
+                changed_fields.append("year")
             except Exception:
-                setattr(movie, "year", new_year)
-            changed_fields.append("year")
+                try:
+                    setattr(movie, "year", new_year)
+                    changed_fields.append("year")
+                except Exception as e:
+                    _logger.warning(f"No se pudo setear year en movie: {e}")
 
         # Algunos clientes de Plex requieren save() o similar; si existe, lo llamamos.
         save_method = getattr(movie, "save", None)
         if callable(save_method) and changed_fields:
-            save_method()
+            try:
+                save_method()
+            except Exception as e:
+                _logger.warning(f"save() falló al aplicar metadata: {e}")
 
         if changed_fields:
-            logs.append(f"  - Cambios aplicados en campos: {', '.join(changed_fields)}")
+            msg = f"  - Cambios aplicados en campos: {', '.join(changed_fields)}"
+            logs.append(msg)
+            _logger.info(msg)
         else:
-            logs.append("  - No se detectaron cambios a aplicar (ya coincide con OMDb).")
+            msg = "  - No se detectaron cambios a aplicar (ya coincide con OMDb)."
+            logs.append(msg)
+            _logger.debug(msg)
 
     except Exception as exc:  # pragma: no cover (por seguridad)
-        logs.append(f"  - ERROR aplicando cambios de metadata: {exc!r}")
+        msg = f"  - ERROR aplicando cambios de metadata: {exc!r}"
+        logs.append(msg)
+        _logger.error(msg)
 
     return logs

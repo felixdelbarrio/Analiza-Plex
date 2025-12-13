@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 # Cargamos el README.md como descripción larga, si existe.
 try:
@@ -17,6 +17,9 @@ setup(
     url="",
     # No creamos paquetes; usamos los módulos sueltos existentes.
     py_modules=["analiza_plex", "dashboard"],
+    # Incluimos el paquete `backend` para que pueda importarse tras la
+    # instalación editable (pytest y el código importan `backend.*`).
+    packages=find_packages(exclude=("tests",)),
     # Dependencias detectadas a partir de los imports de analiza_plex.py y dashboard.py
     install_requires=[
         "python-dotenv",
@@ -26,7 +29,7 @@ setup(
         "pandas",
         "streamlit",
         "altair",
-        "st-aggrid",
+        "streamlit-aggrid",
     ],
     extras_require={
         # Extra vacío por ahora, pero permite usar `-e .[dev]` sin romper nada.

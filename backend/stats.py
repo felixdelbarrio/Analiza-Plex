@@ -13,13 +13,13 @@ from backend.config import (
     RATING_MIN_TITLES_FOR_AUTO,
     IMDB_KEEP_MIN_RATING,
     IMDB_DELETE_MAX_RATING,
-    SILENT_MODE,
 )
 from backend.omdb_client import (
     omdb_cache,
     parse_imdb_rating_from_omdb,
     parse_rt_score_from_omdb,
 )
+from backend import logger as _logger
 
 # -------------------------------------------------------------------
 # Logging controlado por SILENT_MODE
@@ -27,9 +27,12 @@ from backend.omdb_client import (
 
 
 def _log_stats(msg: str) -> None:
-    if SILENT_MODE:
-        return
-    print(msg)
+    """Logea vía el logger central (respeta SILENT_MODE internamente)."""
+    try:
+        _logger.info(str(msg))
+    except Exception:
+        # Fallback ligero
+        print(msg)
 
 
 # -------------------------------------------------------------------
@@ -70,8 +73,9 @@ def _compute_global_imdb_mean_from_cache_raw() -> Tuple[Optional[float], int]:
         _log_stats("INFO [stats] omdb_cache vacío o no dict; sin ratings IMDb.")
         return None, 0
 
+    # Recolectamos ratings con una comprensión segura
     ratings: List[float] = []
-    for _, data in omdb_cache.items():
+    for data in omdb_cache.values():
         if not isinstance(data, dict):
             continue
         r = parse_imdb_rating_from_omdb(data)
@@ -164,7 +168,7 @@ def _load_imdb_ratings_list_from_cache() -> Tuple[List[float], int]:
 
     ratings: List[float] = []
     if isinstance(omdb_cache, dict):
-        for _, data in omdb_cache.items():
+        for data in omdb_cache.values():
             if not isinstance(data, dict):
                 continue
             r = parse_imdb_rating_from_omdb(data)
@@ -196,7 +200,7 @@ def _load_imdb_ratings_list_no_rt_from_cache() -> Tuple[List[float], int]:
 
     ratings: List[float] = []
     if isinstance(omdb_cache, dict):
-        for _, data in omdb_cache.items():
+        for data in omdb_cache.values():
             if not isinstance(data, dict):
                 continue
             r = parse_imdb_rating_from_omdb(data)

@@ -130,10 +130,12 @@ def compute_scoring(
             c_global=c_global,
         )
         inputs["score_bayes"] = bayes_score
-        inputs["m_dynamic"] = m_dynamic
-        inputs["c_global"] = c_global
-        inputs["bayes_keep_thr"] = bayes_keep_thr
-        inputs["bayes_delete_thr"] = bayes_delete_thr
+
+    # Añadimos información contextual a inputs siempre (útil para logging/debug)
+    inputs["m_dynamic"] = m_dynamic
+    inputs["c_global"] = c_global
+    inputs["bayes_keep_thr"] = bayes_keep_thr
+    inputs["bayes_delete_thr"] = bayes_delete_thr
 
     # ----------------------------------------------------
     # 1) DECISIÓN PRINCIPAL: BAYES
@@ -230,7 +232,8 @@ def compute_scoring(
     # 4) FALLO EN BAYES → fallbacks por rating/votos clásicos
     # ----------------------------------------------------
     if bayes_score is None and imdb_rating is not None and imdb_votes is not None:
-        dynamic_votes_needed = get_votes_threshold_for_year(year)
+        # Reutilizamos el umbral ya calculado
+        dynamic_votes_needed = m_dynamic
 
         # 4.1 KEEP clásico
         if (
