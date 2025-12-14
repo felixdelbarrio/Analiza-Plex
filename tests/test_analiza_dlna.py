@@ -8,7 +8,7 @@ import os
 import json
 import pytest
 
-from backend import analiza_dnla
+from backend import analiza_dlna
 
 
 # ============================================================
@@ -38,12 +38,12 @@ def test_is_video_file_true_and_false(tmp_path: Path) -> None:
     video.write_bytes(b"123")
     text.write_text("hola", encoding="utf-8")
 
-    assert analiza_dnla._is_video_file(video) is True
-    assert analiza_dnla._is_video_file(text) is False
+    assert analiza_dlna._is_video_file(video) is True
+    assert analiza_dlna._is_video_file(text) is False
     # Directorio tampoco debe considerarse vídeo
     subdir = tmp_path / "dir"
     subdir.mkdir()
-    assert analiza_dnla._is_video_file(subdir) is False
+    assert analiza_dlna._is_video_file(subdir) is False
 
 
 @pytest.mark.parametrize(
@@ -62,7 +62,7 @@ def test_guess_title_year_patterns(
 ) -> None:
     f = tmp_path / filename
     f.write_bytes(b"data")
-    title, year = analiza_dnla._guess_title_year(f)
+    title, year = analiza_dlna._guess_title_year(f)
     assert title == expected_title
     assert year == expected_year
 
@@ -90,11 +90,11 @@ def _make_fake_files(tmp_path: Path) -> list[Path]:
 
 def test_analyze_dlna_server_with_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # 1) _ask_root_directory devuelve nuestro tmp_path
-    monkeypatch.setattr(analiza_dnla, "_ask_root_directory", lambda: tmp_path)
+    monkeypatch.setattr(analiza_dlna, "_ask_root_directory", lambda: tmp_path)
 
     # 2) Forzamos la lista de vídeo a un set controlado
     files = _make_fake_files(tmp_path)
-    monkeypatch.setattr(analiza_dnla, "_iter_video_files", lambda root: files)
+    monkeypatch.setattr(analiza_dlna, "_iter_video_files", lambda root: files)
 
     # 3) Stub de OMDb/Wiki: get_movie_record → datos mínimos
     def fake_get_movie_record(title: str, year: int | None, imdb_id_hint: str | None = None):
@@ -111,26 +111,26 @@ def test_analyze_dlna_server_with_files(tmp_path: Path, monkeypatch: pytest.Monk
             },
         }
 
-    monkeypatch.setattr(analiza_dnla, "get_movie_record", fake_get_movie_record)
+    monkeypatch.setattr(analiza_dlna, "get_movie_record", fake_get_movie_record)
 
     # 4) Stub del core genérico analyze_input_movie
     collected_inputs: list[Tuple[str, int | None, str]] = []
 
-    def fake_analyze_input_movie(dnla_input, fetch_omdb):
+    def fake_analyze_input_movie(dlna_input, fetch_omdb):
         # Registramos lo que entra para asegurar que _guess_title_year
         # se aplicó correctamente.
         collected_inputs.append(
-            (dnla_input.title, dnla_input.year, dnla_input.file_path)
+            (dlna_input.title, dlna_input.year, dlna_input.file_path)
         )
 
         # Simulamos una decisión: GOOD → KEEP, BAD → DELETE
-        decision = "KEEP" if "Good" in dnla_input.title else "DELETE"
+        decision = "KEEP" if "Good" in dlna_input.title else "DELETE"
 
         return {
-            "source": dnla_input.source,
-            "library": dnla_input.library,
-            "title": dnla_input.title,
-            "year": dnla_input.year,
+            "source": dlna_input.source,
+            "library": dlna_input.library,
+            "title": dlna_input.title,
+            "year": dlna_input.year,
             "imdb_rating": 7.0,
             "rt_score": 80,
             "imdb_votes": 1000,
@@ -138,11 +138,11 @@ def test_analyze_dlna_server_with_files(tmp_path: Path, monkeypatch: pytest.Monk
             "decision": decision,
             "reason": "reason",
             "misidentified_hint": "",
-            "file": dnla_input.file_path,
-            "file_size_bytes": dnla_input.file_size_bytes,
+            "file": dlna_input.file_path,
+            "file_size_bytes": dlna_input.file_size_bytes,
         }
 
-    monkeypatch.setattr(analiza_dnla, "analyze_input_movie", fake_analyze_input_movie)
+    monkeypatch.setattr(analiza_dlna, "analyze_input_movie", fake_analyze_input_movie)
 
     # 5) sort_filtered_rows → identidad, pero registramos la llamada
     sort_rec = Recorder()
@@ -151,41 +151,41 @@ def test_analyze_dlna_server_with_files(tmp_path: Path, monkeypatch: pytest.Monk
         sort_rec(rows)
         return rows
 
-    monkeypatch.setattr(analiza_dnla, "sort_filtered_rows", fake_sort_filtered_rows)
+    monkeypatch.setattr(analiza_dlna, "sort_filtered_rows", fake_sort_filtered_rows)
 
     # 6) Capturamos escrituras CSV
     rec_all = Recorder()
     rec_filtered = Recorder()
     rec_sugg = Recorder()
 
-    monkeypatch.setattr(analiza_dnla, "write_all_csv", rec_all)
-    monkeypatch.setattr(analiza_dnla, "write_filtered_csv", rec_filtered)
-    monkeypatch.setattr(analiza_dnla, "write_suggestions_csv", rec_sugg)
+    monkeypatch.setattr(analiza_dlna, "write_all_csv", rec_all)
+    monkeypatch.setattr(analiza_dlna, "write_filtered_csv", rec_filtered)
+    monkeypatch.setattr(analiza_dlna, "write_suggestions_csv", rec_sugg)
 
     # 7) Prefijos
-    monkeypatch.setattr(analiza_dnla, "OUTPUT_PREFIX", "OUTDLNA")
-    monkeypatch.setattr(analiza_dnla, "METADATA_OUTPUT_PREFIX", "METADLNA")
+    monkeypatch.setattr(analiza_dlna, "OUTPUT_PREFIX", "OUTDLNA")
+    monkeypatch.setattr(analiza_dlna, "METADATA_OUTPUT_PREFIX", "METADLNA")
 
     # 8) Capturamos logs info para no depender de stdout
     info_logs: list[str] = []
     monkeypatch.setattr(
-        analiza_dnla._logger,
+        analiza_dlna._logger,
         "info",
         lambda msg, **kw: info_logs.append(str(msg)),
     )
     monkeypatch.setattr(
-        analiza_dnla._logger,
+        analiza_dlna._logger,
         "warning",
         lambda msg, **kw: info_logs.append(str(msg)),
     )
     monkeypatch.setattr(
-        analiza_dnla._logger,
+        analiza_dlna._logger,
         "error",
         lambda msg, **kw: info_logs.append(str(msg)),
     )
 
     # Ejecutamos el flujo principal
-    analiza_dnla.analyze_dlna_server()
+    analiza_dlna.analyze_dlna_server()
 
     # -----------------------------------------------------
     # Verificaciones
@@ -240,23 +240,23 @@ def test_analyze_dlna_server_with_files(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_analyze_dlna_server_analyze_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Si analyze_input_movie lanza error para un fichero, se loggea y se sigue con el resto."""
-    monkeypatch.setattr(analiza_dnla, "_ask_root_directory", lambda: tmp_path)
+    monkeypatch.setattr(analiza_dlna, "_ask_root_directory", lambda: tmp_path)
 
     files = _make_fake_files(tmp_path)
-    monkeypatch.setattr(analiza_dnla, "_iter_video_files", lambda root: files)
+    monkeypatch.setattr(analiza_dlna, "_iter_video_files", lambda root: files)
 
     # Primer fichero lanza error, segundo funciona
     calls: list[str] = []
 
-    def fake_analyze_input_movie(dnla_input, fetch_omdb):
-        calls.append(dnla_input.file_path)
-        if "Good.Movie" in dnla_input.file_path:
+    def fake_analyze_input_movie(dlna_input, fetch_omdb):
+        calls.append(dlna_input.file_path)
+        if "Good.Movie" in dlna_input.file_path:
             raise RuntimeError("Test error")
         return {
-            "source": dnla_input.source,
-            "library": dnla_input.library,
-            "title": dnla_input.title,
-            "year": dnla_input.year,
+            "source": dlna_input.source,
+            "library": dlna_input.library,
+            "title": dlna_input.title,
+            "year": dlna_input.year,
             "imdb_rating": 5.0,
             "rt_score": 40,
             "imdb_votes": 100,
@@ -264,15 +264,15 @@ def test_analyze_dlna_server_analyze_error(tmp_path: Path, monkeypatch: pytest.M
             "decision": "DELETE",
             "reason": "reason",
             "misidentified_hint": "",
-            "file": dnla_input.file_path,
-            "file_size_bytes": dnla_input.file_size_bytes,
+            "file": dlna_input.file_path,
+            "file_size_bytes": dlna_input.file_size_bytes,
         }
 
-    monkeypatch.setattr(analiza_dnla, "analyze_input_movie", fake_analyze_input_movie)
+    monkeypatch.setattr(analiza_dlna, "analyze_input_movie", fake_analyze_input_movie)
 
     # get_movie_record stub mínimo
     monkeypatch.setattr(
-        analiza_dnla,
+        analiza_dlna,
         "get_movie_record",
         lambda *a, **k: {"Title": "X", "Year": "2000"},
     )
@@ -281,33 +281,33 @@ def test_analyze_dlna_server_analyze_error(tmp_path: Path, monkeypatch: pytest.M
     rec_all = Recorder()
     rec_filtered = Recorder()
     rec_sugg = Recorder()
-    monkeypatch.setattr(analiza_dnla, "write_all_csv", rec_all)
-    monkeypatch.setattr(analiza_dnla, "write_filtered_csv", rec_filtered)
-    monkeypatch.setattr(analiza_dnla, "write_suggestions_csv", rec_sugg)
+    monkeypatch.setattr(analiza_dlna, "write_all_csv", rec_all)
+    monkeypatch.setattr(analiza_dlna, "write_filtered_csv", rec_filtered)
+    monkeypatch.setattr(analiza_dlna, "write_suggestions_csv", rec_sugg)
 
     # Prefijos
-    monkeypatch.setattr(analiza_dnla, "OUTPUT_PREFIX", "OUTERR")
-    monkeypatch.setattr(analiza_dnla, "METADATA_OUTPUT_PREFIX", "METAERR")
+    monkeypatch.setattr(analiza_dlna, "OUTPUT_PREFIX", "OUTERR")
+    monkeypatch.setattr(analiza_dlna, "METADATA_OUTPUT_PREFIX", "METAERR")
 
     # Logs
     info_logs: list[str] = []
     monkeypatch.setattr(
-        analiza_dnla._logger,
+        analiza_dlna._logger,
         "info",
         lambda msg, **kw: info_logs.append(str(msg)),
     )
     monkeypatch.setattr(
-        analiza_dnla._logger,
+        analiza_dlna._logger,
         "warning",
         lambda msg, **kw: info_logs.append(str(msg)),
     )
     monkeypatch.setattr(
-        analiza_dnla._logger,
+        analiza_dlna._logger,
         "error",
         lambda msg, **kw: info_logs.append(str(msg)),
     )
 
-    analiza_dnla.analyze_dlna_server()
+    analiza_dlna.analyze_dlna_server()
 
     # Debe haberse intentado analizar ambos ficheros
     assert len(calls) == 2
@@ -337,24 +337,24 @@ def test_analyze_dlna_server_analyze_error(tmp_path: Path, monkeypatch: pytest.M
 
 def test_analyze_dlna_server_no_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Si no hay ficheros de vídeo, no se escriben CSVs y se loguea el mensaje correspondiente."""
-    monkeypatch.setattr(analiza_dnla, "_ask_root_directory", lambda: tmp_path)
-    monkeypatch.setattr(analiza_dnla, "_iter_video_files", lambda root: [])
+    monkeypatch.setattr(analiza_dlna, "_ask_root_directory", lambda: tmp_path)
+    monkeypatch.setattr(analiza_dlna, "_iter_video_files", lambda root: [])
 
     rec_all = Recorder()
     rec_filtered = Recorder()
     rec_sugg = Recorder()
-    monkeypatch.setattr(analiza_dnla, "write_all_csv", rec_all)
-    monkeypatch.setattr(analiza_dnla, "write_filtered_csv", rec_filtered)
-    monkeypatch.setattr(analiza_dnla, "write_suggestions_csv", rec_sugg)
+    monkeypatch.setattr(analiza_dlna, "write_all_csv", rec_all)
+    monkeypatch.setattr(analiza_dlna, "write_filtered_csv", rec_filtered)
+    monkeypatch.setattr(analiza_dlna, "write_suggestions_csv", rec_sugg)
 
     info_logs: list[str] = []
     monkeypatch.setattr(
-        analiza_dnla._logger,
+        analiza_dlna._logger,
         "info",
         lambda msg, **kw: info_logs.append(str(msg)),
     )
 
-    analiza_dnla.analyze_dlna_server()
+    analiza_dlna.analyze_dlna_server()
 
     # No debe haberse intentado escribir ningún CSV
     assert rec_all.calls == []

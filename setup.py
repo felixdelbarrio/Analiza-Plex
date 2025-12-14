@@ -49,7 +49,7 @@ setup(
             # Ejecuta análisis Plex directamente (todas las bibliotecas)
             "analiza-plex=backend.analiza_plex:analyze_all_libraries",
             # Ejecuta análisis DLNA/directorio local directamente
-            "analiza-dlna=backend.analiza_dnla:analyze_dlna_server",
+            "analiza-dlna=backend.analiza_dlna:analyze_dlna_server",
             # Si quieres un comando para lanzar el dashboard en el futuro:
             # "analiza-dashboard=backend.dashboard:run_dashboard",
         ]

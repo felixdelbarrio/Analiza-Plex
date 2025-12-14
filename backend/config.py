@@ -47,9 +47,9 @@ def _get_env_bool(name: str, default: bool) -> bool:
 #   BASEURL=http://192.168.1.10
 BASEURL: str | None = os.getenv("BASEURL")
 
-# Puertos independientes para Plex y DNLA
+# Puertos independientes para Plex y dlna
 PLEX_PORT: int = _get_env_int("PLEX_PORT", 32400)
-DNLA_PORT: int = _get_env_int("DNLA_PORT", 8200)
+dlna_PORT: int = _get_env_int("dlna_PORT", 8200)
 
 PLEX_TOKEN: str | None = os.getenv("PLEX_TOKEN")
 OMDB_API_KEY: str | None = os.getenv("OMDB_API_KEY")
@@ -57,15 +57,15 @@ OMDB_API_KEY: str | None = os.getenv("OMDB_API_KEY")
 # Prefijo de ficheros de salida (report_all, report_filtered, etc.)
 OUTPUT_PREFIX: str = os.getenv("OUTPUT_PREFIX", "report")
 
-# Bibliotecas a excluir (Plex y DNLA) — separadas
+# Bibliotecas a excluir (Plex y dlna) — separadas
 _raw_exclude_plex: str = os.getenv("EXCLUDE_PLEX_LIBRARIES", "")
 EXCLUDE_PLEX_LIBRARIES: list[str] = [
     x.strip() for x in _raw_exclude_plex.split(",") if x.strip()
 ]
 
-_raw_exclude_dnla: str = os.getenv("EXCLUDE_DNLA_LIBRARIES", "")
-EXCLUDE_DNLA_LIBRARIES: list[str] = [
-    x.strip() for x in _raw_exclude_dnla.split(",") if x.strip()
+_raw_exclude_dlna: str = os.getenv("EXCLUDE_DLNA_LIBRARIES", "")
+EXCLUDE_DLNA_LIBRARIES: list[str] = [
+    x.strip() for x in _raw_exclude_dlna.split(",") if x.strip()
 ]
 
 # ----------------------------------------------------
@@ -260,10 +260,10 @@ def _log_config_debug(label: str, value: object) -> None:
 
 _log_config_debug("DEBUG BASEURL", BASEURL)
 _log_config_debug("DEBUG PLEX_PORT", PLEX_PORT)
-_log_config_debug("DEBUG DNLA_PORT", DNLA_PORT)
+_log_config_debug("DEBUG dlna_PORT", dlna_PORT)
 _log_config_debug("DEBUG TOKEN", "****" if PLEX_TOKEN else None)
 _log_config_debug("DEBUG EXCLUDE_PLEX_LIBRARIES", EXCLUDE_PLEX_LIBRARIES)
-_log_config_debug("DEBUG EXCLUDE_DNLA_LIBRARIES", EXCLUDE_DNLA_LIBRARIES)
+_log_config_debug("DEBUG EXCLUDE_DLNA_LIBRARIES", EXCLUDE_DLNA_LIBRARIES)
 _log_config_debug("DEBUG METADATA_DRY_RUN", METADATA_DRY_RUN)
 _log_config_debug("DEBUG METADATA_APPLY_CHANGES", METADATA_APPLY_CHANGES)
 _log_config_debug("DEBUG OMDB_RETRY_EMPTY_CACHE", OMDB_RETRY_EMPTY_CACHE)

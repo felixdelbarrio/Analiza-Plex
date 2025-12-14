@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""analiza_dnla.py
+"""analiza_dlna.py
 
 Flujo de análisis para contenidos obtenidos desde una fuente tipo DLNA
 (o, de forma simplificada, desde un árbol de directorios local).
@@ -25,7 +25,7 @@ from backend import logger as _logger
 from backend.config import (
     OUTPUT_PREFIX,
     METADATA_OUTPUT_PREFIX,
-    EXCLUDE_DNLA_LIBRARIES,
+    EXCLUDE_DLNA_LIBRARIES,
 )
 from backend.decision_logic import sort_filtered_rows
 from backend.reporting import write_all_csv, write_filtered_csv, write_suggestions_csv
@@ -123,11 +123,11 @@ def analyze_dlna_server() -> None:
     library = root.name  # etiqueta simple de biblioteca (nombre del directorio raíz)
 
     # -------------------------------------------------
-    # Respetar EXCLUDE_DNLA_LIBRARIES
+    # Respetar EXCLUDE_DLNA_LIBRARIES
     # -------------------------------------------------
-    if library in EXCLUDE_DNLA_LIBRARIES:
+    if library in EXCLUDE_DLNA_LIBRARIES:
         _logger.info(
-            f"[DLNA] La biblioteca '{library}' está en EXCLUDE_DNLA_LIBRARIES; "
+            f"[DLNA] La biblioteca '{library}' está en EXCLUDE_DLNA_LIBRARIES; "
             "se omite el análisis.",
             always=True,
         )

@@ -121,7 +121,7 @@ def analyze_input_movie(
         "imdb_rating": imdb_rating,
         "rt_score": rt_score,
         "imdb_votes": imdb_votes,
-        "plex_rating": None,  # DNLA/local no tienen rating Plex aquí
+        "plex_rating": None,  # dlna/local no tienen rating Plex aquí
         "decision": decision,
         "reason": reason,
         "misidentified_hint": misidentified_hint,

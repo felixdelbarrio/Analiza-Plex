@@ -44,7 +44,7 @@ Analiza Movies follows a **modular, pipeline‑oriented architecture**:
 | `plex_client.py` | Connects to Plex, retrieves libraries/movies, handles deletion operations. |
 | `omdb_client.py` | Queries OMDb, extracts ratings, applies retry logic, stores JSON cache. |
 | `wiki_client.py` | Fetches and caches Wikipedia data. |
-| `DNLA_input.py` | Abstracts DLNA‑style inputs when Plex is not used. |
+| `dlna_input.py` | Abstracts DLNA‑style inputs when Plex is not used. |
 
 ---
 
@@ -282,7 +282,7 @@ graph TD
 
     subgraph Inputs
         I1[plex_client.py]
-        I2[DNLA_input.py]
+        I2[dlna_input.py]
         I3[omdb_client.py]
         I4[wiki_client.py]
     end
@@ -373,7 +373,7 @@ You can open this in any browser or vector editor to tweak it as needed.
   <rect x="20" y="40" width="260" height="120" class="box"/>
   <text x="30" y="60" class="title">Inputs</text>
   <text x="30" y="80" class="text">plex_client.py</text>
-  <text x="30" y="100" class="text">DNLA_input.py</text>
+  <text x="30" y="100" class="text">dlna_input.py</text>
   <text x="30" y="120" class="text">omdb_client.py</text>
   <text x="30" y="140" class="text">wiki_client.py</text>
 

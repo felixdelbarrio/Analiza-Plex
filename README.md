@@ -99,7 +99,7 @@ At a high level the project is structured as a Python package (commonly named `b
 - **Auxiliary utilities and inputs**
   - `data_utils.py`  
     Shared helpers for working with pandas DataFrames and common transformations.
-  - `DNLA_input.py`  
+  - `dlna_input.py`  
     Abstractions for DLNA-style inputs when not using Plex directly.
   - `report_all.csv`  
     Example or existing full report produced by a previous analysis run.
@@ -249,7 +249,7 @@ A alto nivel, el proyecto se organiza como un paquete de Python (habitualmente l
 - **Utilidades auxiliares e inputs**
   - `data_utils.py`  
     Utilidades compartidas para trabajar con DataFrames de pandas y transformaciones comunes.
-  - `DNLA_input.py`  
+  - `dlna_input.py`  
     Abstracción para entradas tipo DLNA cuando no se usa Plex directamente.
   - `report_all.csv`  
     Informe completo de ejemplo o generado en una ejecución anterior del análisis.

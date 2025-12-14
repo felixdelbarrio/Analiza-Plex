@@ -1,4 +1,4 @@
-# tests/test_dnla_input.py
+# tests/test_dlna_input.py
 from __future__ import annotations
 
 from backend.movie_input import MovieInput
@@ -9,7 +9,7 @@ from backend.movie_input import MovieInput
 # ----------------------------------------------------------------------
 
 
-def test_dnla_input_creation_basic() -> None:
+def test_dlna_input_creation_basic() -> None:
     obj = MovieInput(
         source="dlna",
         library="My Videos",
@@ -41,7 +41,7 @@ def test_dnla_input_creation_basic() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_dnla_has_physical_file_true() -> None:
+def test_dlna_has_physical_file_true() -> None:
     obj = MovieInput(
         source="local",
         library="Docs",
@@ -57,7 +57,7 @@ def test_dnla_has_physical_file_true() -> None:
     assert obj.has_physical_file() is True
 
 
-def test_dnla_has_physical_file_false() -> None:
+def test_dlna_has_physical_file_false() -> None:
     obj = MovieInput(
         source="local",
         library="Docs",
@@ -78,7 +78,7 @@ def test_dnla_has_physical_file_false() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_dnla_normalized_title_basic() -> None:
+def test_dlna_normalized_title_basic() -> None:
     obj = MovieInput(
         source="plex",
         library="Movies",
@@ -94,7 +94,7 @@ def test_dnla_normalized_title_basic() -> None:
     assert obj.normalized_title() == "la peli"
 
 
-def test_dnla_normalized_title_empty() -> None:
+def test_dlna_normalized_title_empty() -> None:
     obj = MovieInput(
         source="plex",
         library="Movies",
@@ -116,7 +116,7 @@ def test_dnla_normalized_title_empty() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_dnla_describe_with_file() -> None:
+def test_dlna_describe_with_file() -> None:
     obj = MovieInput(
         source="plex",
         library="Movies",
@@ -136,7 +136,7 @@ def test_dnla_describe_with_file() -> None:
     assert "Movies" in desc
 
 
-def test_dnla_describe_without_file() -> None:
+def test_dlna_describe_without_file() -> None:
     obj = MovieInput(
         source="dlna",
         library="DLNA Lib",
@@ -162,7 +162,7 @@ def test_dnla_describe_without_file() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_dnla_extra_dict_is_independent() -> None:
+def test_dlna_extra_dict_is_independent() -> None:
     obj1 = MovieInput(
         source="local",
         library="Lib",
@@ -193,7 +193,7 @@ def test_dnla_extra_dict_is_independent() -> None:
     assert obj2.extra == {}  # deben ser independientes
 
 
-def test_dnla_create_with_extra_initial_data() -> None:
+def test_dlna_create_with_extra_initial_data() -> None:
     obj = MovieInput(
         source="other",
         library="X",

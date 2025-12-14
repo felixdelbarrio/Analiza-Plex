@@ -115,7 +115,7 @@ def analyze_single_movie(
 
     # 4) Construcción de MovieInput para el core genérico
     try:
-        dnla_input = MovieInput(
+        dlna_input = MovieInput(
             source="plex",
             library=library,
             title=search_title,
@@ -139,7 +139,7 @@ def analyze_single_movie(
 
     # 5) Núcleo de análisis (core genérico)
     try:
-        base_row: AnalysisRow = analyze_input_movie(dnla_input, fetch_omdb)
+        base_row: AnalysisRow = analyze_input_movie(dlna_input, fetch_omdb)
     except Exception as exc:  # pragma: no cover (defensivo)
         msg = (
             f"[ERROR] {library} / {title} ({year}): "
