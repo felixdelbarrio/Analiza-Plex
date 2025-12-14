@@ -23,7 +23,7 @@ Objetivo del archivo: dar instrucciones claras y prácticas a agentes AI (Copilo
 
 ## Convenciones y variables de entorno
 - Configuración via `.env` (leída en `backend/config.py`). Variables críticas:
-  - `PLEX_BASEURL`, `PLEX_TOKEN`, `OMDB_API_KEY`, `OUTPUT_PREFIX`, `SILENT_MODE`.
+  - `BASEURL`, `PLEX_TOKEN`, `OMDB_API_KEY`, `OUTPUT_PREFIX`, `SILENT_MODE`.
 - Logging: los módulos deben respetar `SILENT_MODE`. Utilizar el logger central (`backend/logger.py`) si existe.
 - Caché OMDb: `omdb_cache.json` es la única fuente persistente de OMDb; el cliente normaliza formatos antiguos.
 
@@ -91,7 +91,7 @@ Este repo analiza bibliotecas Plex, consulta OMDb/Wikipedia, decide KEEP/MAYBE/D
 5. `reporting` genera CSV/HTML y `frontend` muestra dashboard (Streamlit).
 
 ## Convenciones de proyecto útiles para el agente
-- Configuración via `.env` (leída en `backend/config.py`). Variables críticas: `PLEX_BASEURL`, `PLEX_TOKEN`, `OMDB_API_KEY`, `OUTPUT_PREFIX`, `SILENT_MODE`.
+- Configuración via `.env` (leída en `backend/config.py`). Variables críticas: `BASEURL`, `PLEX_TOKEN`, `OMDB_API_KEY`, `OUTPUT_PREFIX`, `SILENT_MODE`.
 - Logging: respetar `SILENT_MODE` (módulos usan `_log` y `_log_always`). Evitar imprimir si `SILENT_MODE=true`.
 - Caché OMDb: `omdb_cache.json` es la única fuente persistente de OMDb; `omdb_client` normaliza formatos antiguos.
 - Umbrales y comportamiento configurable en `backend/config.py` (ej: `IMDB_KEEP_MIN_RATING`, `OMDB_RATE_LIMIT_WAIT_SECONDS`, `OMDB_RETRY_EMPTY_CACHE`).
@@ -114,7 +114,7 @@ Este repo analiza bibliotecas Plex, consulta OMDb/Wikipedia, decide KEEP/MAYBE/D
 - Para escribir el HTML interactivo con DataTables + Chart.js: `backend/reporting.write_interactive_html`.
 
 ## Integraciones externas
-- Plex: `plexapi` (usa `PlexServer` con `PLEX_BASEURL` y `PLEX_TOKEN`).
+- Plex: `plexapi` (usa `PlexServer` con `BASEURL` y `PLEX_TOKEN`).
 - OMDb: accesos HTTP directos (`requests`) y cacheado en `omdb_cache.json`.
 - Streamlit + st_aggrid para UI.
 

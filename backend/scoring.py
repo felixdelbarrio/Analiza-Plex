@@ -1,5 +1,6 @@
-# backend/scoring.py
-from typing import Any, Dict, Optional, Tuple
+from __future__ import annotations
+
+from typing import Final
 
 from backend.config import (
     BAYES_DELETE_MAX_SCORE,
@@ -19,13 +20,15 @@ from backend.stats import (
     get_auto_delete_rating_threshold,
 )
 
+ScoringDict = dict[str, object]
+
 
 def _compute_bayes_score(
-    imdb_rating: Optional[float],
-    imdb_votes: Optional[int],
+    imdb_rating: float | None,
+    imdb_votes: int | None,
     m: int,
     c_global: float,
-) -> Optional[float]:
+) -> float | None:
     """
     score_bayes = (v / (v + m)) * R + (m / (v + m)) * C
 
@@ -52,16 +55,18 @@ def _compute_bayes_score(
     if v + m == 0:
         return None
 
-    return (v / (v + m)) * float(imdb_rating) + (m / (v + m)) * float(c_global)
+    r = float(imdb_rating)
+    c = float(c_global)
+    return (v / (v + m)) * r + (m / (v + m)) * c
 
 
 def compute_scoring(
-    imdb_rating: Optional[float],
-    imdb_votes: Optional[int],
-    rt_score: Optional[int],
-    year: Optional[int] = None,
-    metacritic_score: Optional[int] = None,
-) -> Dict[str, Any]:
+    imdb_rating: float | None,
+    imdb_votes: int | None,
+    rt_score: int | None,
+    year: int | None = None,
+    metacritic_score: int | None = None,
+) -> ScoringDict:
     """
     Calcula la decisión de KEEP / DELETE / MAYBE / UNKNOWN y devuelve
     un objeto de scoring enriquecido:
@@ -89,7 +94,7 @@ def compute_scoring(
 
       4) Si no hay datos suficientes para bayes, se usan fallbacks por rating/votos.
     """
-    inputs: Dict[str, Any] = {
+    inputs: ScoringDict = {
         "imdb_rating": imdb_rating,
         "imdb_votes": imdb_votes,
         "rt_score": rt_score,
@@ -103,7 +108,7 @@ def compute_scoring(
     if imdb_rating is None and imdb_votes is None and rt_score is None:
         return {
             "decision": "UNKNOWN",
-            "reason": "Sin datos suficientes de OMDb (IMDb y RT vacíos)",
+            "reason": "Sin datos suficientes de OMDb (IMDb y RT vacíos).",
             "rule": "NO_DATA",
             "inputs": inputs,
         }
@@ -111,16 +116,17 @@ def compute_scoring(
     # ----------------------------------------------------
     # Umbrales efectivos para score bayesiano
     # ----------------------------------------------------
-    bayes_keep_thr = get_auto_keep_rating_threshold()
-    bayes_delete_thr = get_auto_delete_rating_threshold()
+    bayes_keep_thr: float = get_auto_keep_rating_threshold()
+    bayes_delete_thr: float = get_auto_delete_rating_threshold()
+    # El umbral de delete no puede superar el máximo configurable
     bayes_delete_thr = min(bayes_delete_thr, BAYES_DELETE_MAX_SCORE)
 
     # ----------------------------------------------------
     # Cálculo del score bayesiano (si es posible)
     # ----------------------------------------------------
-    bayes_score: Optional[float] = None
-    m_dynamic = get_votes_threshold_for_year(year)
-    c_global = get_global_imdb_mean_from_cache()
+    bayes_score: float | None = None
+    m_dynamic: int = get_votes_threshold_for_year(year)
+    c_global: float = get_global_imdb_mean_from_cache()
 
     if imdb_rating is not None and imdb_votes is not None:
         bayes_score = _compute_bayes_score(
@@ -140,9 +146,9 @@ def compute_scoring(
     # ----------------------------------------------------
     # 1) DECISIÓN PRINCIPAL: BAYES
     # ----------------------------------------------------
-    preliminary_decision: Optional[str] = None
-    preliminary_rule: Optional[str] = None
-    preliminary_reason: Optional[str] = None
+    preliminary_decision: str | None = None
+    preliminary_rule: str | None = None
+    preliminary_reason: str | None = None
 
     if bayes_score is not None:
         if bayes_score >= bayes_keep_thr:
@@ -150,21 +156,21 @@ def compute_scoring(
             preliminary_rule = "KEEP_BAYES"
             preliminary_reason = (
                 f"score_bayes={bayes_score:.2f} ≥ umbral KEEP={bayes_keep_thr:.2f} "
-                f"(R={imdb_rating}, v={imdb_votes}, m={m_dynamic}, C={c_global:.2f})"
+                f"(R={imdb_rating}, v={imdb_votes}, m={m_dynamic}, C={c_global:.2f})."
             )
         elif bayes_score <= bayes_delete_thr:
             preliminary_decision = "DELETE"
             preliminary_rule = "DELETE_BAYES"
             preliminary_reason = (
                 f"score_bayes={bayes_score:.2f} ≤ umbral DELETE={bayes_delete_thr:.2f} "
-                f"(R={imdb_rating}, v={imdb_votes}, m={m_dynamic}, C={c_global:.2f})"
+                f"(R={imdb_rating}, v={imdb_votes}, m={m_dynamic}, C={c_global:.2f})."
             )
         else:
             preliminary_decision = "MAYBE"
             preliminary_rule = "MAYBE_BAYES_MIDDLE"
             preliminary_reason = (
                 f"score_bayes={bayes_score:.2f} entre umbral DELETE={bayes_delete_thr:.2f} "
-                f"y KEEP={bayes_keep_thr:.2f} (evidencia intermedia)"
+                f"y KEEP={bayes_keep_thr:.2f} (evidencia intermedia)."
             )
 
     # ----------------------------------------------------
@@ -207,9 +213,10 @@ def compute_scoring(
             return {
                 "decision": "DELETE",
                 "reason": (
-                    f"{preliminary_reason}; además RT={rt_score}% ≤ RT_DELETE_MAX_SCORE={RT_DELETE_MAX_SCORE}, "
+                    f"{preliminary_reason or ''} Además RT={rt_score}% ≤ "
+                    f"RT_DELETE_MAX_SCORE={RT_DELETE_MAX_SCORE}, "
                     "lo que refuerza la decisión de borrar (público muy negativo)."
-                ),
+                ).strip(),
                 "rule": "DELETE_BAYES_RT_CONFIRMED",
                 "inputs": inputs,
             }
@@ -232,8 +239,7 @@ def compute_scoring(
     # 4) FALLO EN BAYES → fallbacks por rating/votos clásicos
     # ----------------------------------------------------
     if bayes_score is None and imdb_rating is not None and imdb_votes is not None:
-        # Reutilizamos el umbral ya calculado
-        dynamic_votes_needed = m_dynamic
+        dynamic_votes_needed: int = m_dynamic
 
         # 4.1 KEEP clásico
         if (
@@ -283,7 +289,10 @@ def compute_scoring(
                     f" La crítica especializada también es favorable "
                     f"(Metacritic={meta})."
                 )
-            elif preliminary_decision == "DELETE" and meta <= METACRITIC_DELETE_MAX_SCORE:
+            elif (
+                preliminary_decision == "DELETE"
+                and meta <= METACRITIC_DELETE_MAX_SCORE
+            ):
                 reason += (
                     f" La crítica especializada también es muy negativa "
                     f"(Metacritic={meta})."
@@ -334,12 +343,12 @@ def compute_scoring(
 
 
 def decide_action(
-    imdb_rating: Optional[float],
-    imdb_votes: Optional[int],
-    rt_score: Optional[int],
-    year: Optional[int] = None,
-    metacritic_score: Optional[int] = None,
-) -> Tuple[str, str]:
+    imdb_rating: float | None,
+    imdb_votes: int | None,
+    rt_score: int | None,
+    year: int | None = None,
+    metacritic_score: int | None = None,
+) -> tuple[str, str]:
     """
     Devuelve (decision, reason) usando compute_scoring.
 
@@ -353,4 +362,10 @@ def decide_action(
         year=year,
         metacritic_score=metacritic_score,
     )
-    return result["decision"], result["reason"]
+    decision = result.get("decision")
+    reason = result.get("reason")
+
+    # Protección de tipos por si algo raro se cuela en el dict
+    decision_str = str(decision) if decision is not None else "UNKNOWN"
+    reason_str = str(reason) if reason is not None else ""
+    return decision_str, reason_str

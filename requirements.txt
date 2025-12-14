@@ -1,11 +1,18 @@
-# Requirements needed for development
-#   Run: pip install -r requirements.txt
-#
-# Build/Production requirements are defined in setup.py
-#   Run (editable install): pip install -e .
-#   Run (editable with optional dev extras): pip install -e .[dev]
-#
-# In this project, the [dev] extra is currently empty on purpose.
-# You can add linting / testing tools there in the future if you want.
+# Runtime dependencies for Analiza Movies
 
--e .[dev]
+python-dotenv
+requests
+plexapi
+pandas
+streamlit
+altair
+streamlit-aggrid
+
+# If you are developing locally, you can also install the package in editable mode
+# with development extras (mypy, black, pytest, etc.) using:
+#
+#   pip install -e .[dev]
+#
+# or, if you insist on using this requirements file for that:
+#
+# -e .[dev]

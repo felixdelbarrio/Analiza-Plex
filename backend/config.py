@@ -1,13 +1,14 @@
-# backend/config.py
+from __future__ import annotations
+
 import os
-from typing import Any, Iterable, List, Tuple
+from typing import Any
 
 from dotenv import load_dotenv
 
 # Carga de variables de entorno desde .env
 load_dotenv()
 
-from backend import logger as _logger
+from backend import logger as _logger  # noqa: E402  (se importa tras load_dotenv)
 
 
 def _get_env_int(name: str, default: int) -> int:
@@ -38,18 +39,34 @@ def _get_env_bool(name: str, default: bool) -> bool:
         return default
     return str(v).strip().lower() in ("1", "true", "yes", "on")
 
+
 # ----------------------------------------------------
-# Conexión a Plex / OMDb
+# Conexión a servidor multimedia / Plex / OMDb
 # ----------------------------------------------------
-PLEX_BASEURL = os.getenv("PLEX_BASEURL")
-PLEX_TOKEN = os.getenv("PLEX_TOKEN")
-OMDB_API_KEY = os.getenv("OMDB_API_KEY")
+# BASEURL debe contener SOLO el esquema + host (sin puerto), ej:
+#   BASEURL=http://192.168.1.10
+BASEURL: str | None = os.getenv("BASEURL")
+
+# Puertos independientes para Plex y DNLA
+PLEX_PORT: int = _get_env_int("PLEX_PORT", 32400)
+DNLA_PORT: int = _get_env_int("DNLA_PORT", 8200)
+
+PLEX_TOKEN: str | None = os.getenv("PLEX_TOKEN")
+OMDB_API_KEY: str | None = os.getenv("OMDB_API_KEY")
 
 # Prefijo de ficheros de salida (report_all, report_filtered, etc.)
-OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "report")
+OUTPUT_PREFIX: str = os.getenv("OUTPUT_PREFIX", "report")
 
-raw_exclude = os.getenv("EXCLUDE_LIBRARIES", "")
-EXCLUDE_LIBRARIES = [x.strip() for x in raw_exclude.split(",") if x.strip()]
+# Bibliotecas a excluir (Plex y DNLA) — separadas
+_raw_exclude_plex: str = os.getenv("EXCLUDE_PLEX_LIBRARIES", "")
+EXCLUDE_PLEX_LIBRARIES: list[str] = [
+    x.strip() for x in _raw_exclude_plex.split(",") if x.strip()
+]
+
+_raw_exclude_dnla: str = os.getenv("EXCLUDE_DNLA_LIBRARIES", "")
+EXCLUDE_DNLA_LIBRARIES: list[str] = [
+    x.strip() for x in _raw_exclude_dnla.split(",") if x.strip()
+]
 
 # ----------------------------------------------------
 # Umbrales de decisión para KEEP/DELETE
@@ -62,54 +79,65 @@ EXCLUDE_LIBRARIES = [x.strip() for x in raw_exclude.split(",") if x.strip()]
 # ----------------------------------------------------
 
 # ---- Rotten Tomatoes (positivo / negativo) ----
-RT_KEEP_MIN_SCORE = _get_env_int("RT_KEEP_MIN_SCORE", 55)  # RT >= 55% + buen IMDb → refuerza KEEP
-RT_DELETE_MAX_SCORE = _get_env_int("RT_DELETE_MAX_SCORE", 50)  # RT muy bajo → refuerza DELETE
+RT_KEEP_MIN_SCORE: int = _get_env_int("RT_KEEP_MIN_SCORE", 55)
+RT_DELETE_MAX_SCORE: int = _get_env_int("RT_DELETE_MAX_SCORE", 50)
 
 # ---- IMDb con RT (refuerzo positivo) ----
-IMDB_KEEP_MIN_RATING_WITH_RT = _get_env_float("IMDB_KEEP_MIN_RATING_WITH_RT", 6.0)  # IMDb mínimo cuando RT es aceptable
+IMDB_KEEP_MIN_RATING_WITH_RT: float = _get_env_float(
+    "IMDB_KEEP_MIN_RATING_WITH_RT",
+    6.0,
+)
 
 # ---- Fallbacks de rating (cuando no hay suficientes datos para auto-umbrales) ----
-IMDB_KEEP_MIN_RATING = _get_env_float("IMDB_KEEP_MIN_RATING", 5.7)  # solo fallback si no hay suficientes títulos para percentiles
-
-IMDB_DELETE_MAX_RATING = _get_env_float("IMDB_DELETE_MAX_RATING", 5.5)  # solo fallback si no hay suficientes títulos para percentiles
+IMDB_KEEP_MIN_RATING: float = _get_env_float(
+    "IMDB_KEEP_MIN_RATING",
+    5.7,
+)
+IMDB_DELETE_MAX_RATING: float = _get_env_float(
+    "IMDB_DELETE_MAX_RATING",
+    5.5,
+)
 
 # ---- Votos mínimos globales (fallback) ----
-IMDB_KEEP_MIN_VOTES = _get_env_int("IMDB_KEEP_MIN_VOTES", 30000)  # se usa solo si IMDB_VOTES_BY_YEAR está vacío
+IMDB_KEEP_MIN_VOTES: int = _get_env_int("IMDB_KEEP_MIN_VOTES", 30_000)
 
 # ---- UNKNOWN por falta de información ----
-IMDB_MIN_VOTES_FOR_KNOWN = _get_env_int("IMDB_MIN_VOTES_FOR_KNOWN", 100)  # menos de esto → UNKNOWN
+IMDB_MIN_VOTES_FOR_KNOWN: int = _get_env_int("IMDB_MIN_VOTES_FOR_KNOWN", 100)
 
 # ---- LOW thresholds (para misidentificación / sospechosos) ----
-IMDB_RATING_LOW_THRESHOLD = _get_env_float("IMDB_RATING_LOW_THRESHOLD", 3.0)
-RT_RATING_LOW_THRESHOLD = _get_env_int("RT_RATING_LOW_THRESHOLD", 20)
+IMDB_RATING_LOW_THRESHOLD: float = _get_env_float("IMDB_RATING_LOW_THRESHOLD", 3.0)
+RT_RATING_LOW_THRESHOLD: int = _get_env_int("RT_RATING_LOW_THRESHOLD", 20)
 
 # ----------------------------------------------------
 # Auto-umbrales de rating desde omdb_cache
-#   (se usan en backend.stats para calcular umbrales
-#    KEEP/DELETE dinámicos por percentil; si no hay
-#    suficientes títulos válidos, se cae en los
-#    fallbacks IMDB_KEEP_MIN_RATING / IMDB_DELETE_MAX_RATING)
 # ----------------------------------------------------
-AUTO_KEEP_RATING_PERCENTILE = _get_env_float("AUTO_KEEP_RATING_PERCENTILE", 0.70)  # top 30% = buenas
-AUTO_DELETE_RATING_PERCENTILE = _get_env_float("AUTO_DELETE_RATING_PERCENTILE", 0.01)  # peor 1% = muy malas
-RATING_MIN_TITLES_FOR_AUTO = _get_env_int("RATING_MIN_TITLES_FOR_AUTO", 300)  # mínimo para aplicar percentiles
+AUTO_KEEP_RATING_PERCENTILE: float = _get_env_float(
+    "AUTO_KEEP_RATING_PERCENTILE",
+    0.70,
+)
+AUTO_DELETE_RATING_PERCENTILE: float = _get_env_float(
+    "AUTO_DELETE_RATING_PERCENTILE",
+    0.01,
+)
+RATING_MIN_TITLES_FOR_AUTO: int = _get_env_int(
+    "RATING_MIN_TITLES_FOR_AUTO",
+    300,
+)
 
 # ----------------------------------------------------
 # Votos mínimos según antigüedad (para m en Bayes)
-#   Ejemplo en .env:
-#   IMDB_VOTES_BY_YEAR="1980:500,2000:2000,2010:5000,9999:10000"
 # ----------------------------------------------------
-_IMDB_VOTES_BY_YEAR_RAW = os.getenv(
+_IMDB_VOTES_BY_YEAR_RAW: str = os.getenv(
     "IMDB_VOTES_BY_YEAR",
     "1980:500,2000:2000,2010:5000,9999:10000",
 )
 
 # ---- Metacritic (crítica especializada, 0-100) ----
-METACRITIC_KEEP_MIN_SCORE = _get_env_int("METACRITIC_KEEP_MIN_SCORE", 70)  # buena crítica refuerza KEEP
-METACRITIC_DELETE_MAX_SCORE = _get_env_int("METACRITIC_DELETE_MAX_SCORE", 40)  # crítica muy mala refuerza DELETE
+METACRITIC_KEEP_MIN_SCORE: int = _get_env_int("METACRITIC_KEEP_MIN_SCORE", 70)
+METACRITIC_DELETE_MAX_SCORE: int = _get_env_int("METACRITIC_DELETE_MAX_SCORE", 40)
 
 
-def _parse_votes_by_year(raw: str):
+def _parse_votes_by_year(raw: str) -> list[tuple[int, int]]:
     """
     Parsea cadenas tipo:
       1980:500,2000:2000,2010:5000,9999:10000
@@ -121,10 +149,9 @@ def _parse_votes_by_year(raw: str):
     if not raw:
         return []
 
-    # Quitamos comillas exteriores si las hay y espacios
     cleaned = raw.strip().strip('"').strip("'")
 
-    table = []
+    table: list[tuple[int, int]] = []
     for part in cleaned.split(","):
         chunk = part.strip()
         if not chunk:
@@ -135,14 +162,15 @@ def _parse_votes_by_year(raw: str):
             votes_min = int(votes_min_str.strip())
             table.append((year_limit, votes_min))
         except Exception:
-            # Si hay algún trozo mal formado lo ignoramos silenciosamente
+            # Silenciosamente ignoramos trozos mal formados
             continue
 
-    # Ordenamos por año límite ascendente para que sea determinista
     return sorted(table, key=lambda x: x[0])
 
 
-IMDB_VOTES_BY_YEAR = _parse_votes_by_year(_IMDB_VOTES_BY_YEAR_RAW)
+IMDB_VOTES_BY_YEAR: list[tuple[int, int]] = _parse_votes_by_year(
+    _IMDB_VOTES_BY_YEAR_RAW,
+)
 
 
 def get_votes_threshold_for_year(year: int | None) -> int:
@@ -157,7 +185,6 @@ def get_votes_threshold_for_year(year: int | None) -> int:
       - Recorre IMDB_VOTES_BY_YEAR y devuelve el primer votes_min
         cuyo year_limit sea >= year.
     """
-    # Si no hay tabla válida, caemos al umbral fijo clásico
     if not IMDB_VOTES_BY_YEAR:
         return IMDB_KEEP_MIN_VOTES
 
@@ -166,7 +193,6 @@ def get_votes_threshold_for_year(year: int | None) -> int:
     except (TypeError, ValueError):
         y = None
 
-    # Si no hay año, usamos la regla más exigente (último tramo)
     if y is None:
         return IMDB_VOTES_BY_YEAR[-1][1]
 
@@ -174,65 +200,71 @@ def get_votes_threshold_for_year(year: int | None) -> int:
         if y <= year_limit:
             return votes_min
 
-    # Si por lo que sea no ha hecho match, usamos también el último tramo
     return IMDB_VOTES_BY_YEAR[-1][1]
 
 
 # ----------------------------------------------------
 # Parámetros para el scoring bayesiano global
 # ----------------------------------------------------
-BAYES_GLOBAL_MEAN_DEFAULT = _get_env_float("BAYES_GLOBAL_MEAN_DEFAULT", 6.0)
-BAYES_DELETE_MAX_SCORE = _get_env_float("BAYES_DELETE_MAX_SCORE", 4.9)
-BAYES_MIN_TITLES_FOR_GLOBAL_MEAN = _get_env_int("BAYES_MIN_TITLES_FOR_GLOBAL_MEAN", 200)
+BAYES_GLOBAL_MEAN_DEFAULT: float = _get_env_float("BAYES_GLOBAL_MEAN_DEFAULT", 6.0)
+BAYES_DELETE_MAX_SCORE: float = _get_env_float("BAYES_DELETE_MAX_SCORE", 4.9)
+BAYES_MIN_TITLES_FOR_GLOBAL_MEAN: int = _get_env_int(
+    "BAYES_MIN_TITLES_FOR_GLOBAL_MEAN",
+    200,
+)
 
 # ----------------------------------------------------
 # Rate limit OMDb
 # ----------------------------------------------------
-OMDB_RATE_LIMIT_WAIT_SECONDS = _get_env_int("OMDB_RATE_LIMIT_WAIT_SECONDS", 60)
-OMDB_RATE_LIMIT_MAX_RETRIES = _get_env_int("OMDB_RATE_LIMIT_MAX_RETRIES", 1)
+OMDB_RATE_LIMIT_WAIT_SECONDS: int = _get_env_int(
+    "OMDB_RATE_LIMIT_WAIT_SECONDS",
+    60,
+)
+OMDB_RATE_LIMIT_MAX_RETRIES: int = _get_env_int(
+    "OMDB_RATE_LIMIT_MAX_RETRIES",
+    1,
+)
 
 # ----------------------------------------------------
 # Parámetros extra para corrección de metadata
 # ----------------------------------------------------
-METADATA_OUTPUT_PREFIX = os.getenv("METADATA_OUTPUT_PREFIX", "metadata_fix")
-METADATA_MIN_RATING_FOR_OK = _get_env_float("METADATA_MIN_RATING_FOR_OK", 6.0)
-METADATA_MIN_VOTES_FOR_OK = _get_env_int("METADATA_MIN_VOTES_FOR_OK", 2000)
+METADATA_OUTPUT_PREFIX: str = os.getenv("METADATA_OUTPUT_PREFIX", "metadata_fix")
+METADATA_MIN_RATING_FOR_OK: float = _get_env_float(
+    "METADATA_MIN_RATING_FOR_OK",
+    6.0,
+)
+METADATA_MIN_VOTES_FOR_OK: int = _get_env_int(
+    "METADATA_MIN_VOTES_FOR_OK",
+    2000,
+)
 
-METADATA_DRY_RUN = _get_env_bool("METADATA_DRY_RUN", True)
-METADATA_APPLY_CHANGES = _get_env_bool("METADATA_APPLY_CHANGES", False)
+METADATA_DRY_RUN: bool = _get_env_bool("METADATA_DRY_RUN", True)
+METADATA_APPLY_CHANGES: bool = _get_env_bool("METADATA_APPLY_CHANGES", False)
 
-# Reintentar entradas de caché sin rating/votos
-OMDB_RETRY_EMPTY_CACHE = _get_env_bool("OMDB_RETRY_EMPTY_CACHE", False)
+OMDB_RETRY_EMPTY_CACHE: bool = _get_env_bool("OMDB_RETRY_EMPTY_CACHE", False)
 
-# Modo silencioso (afecta a logs en varios módulos)
-SILENT_MODE = _get_env_bool("SILENT_MODE", False)
+SILENT_MODE: bool = _get_env_bool("SILENT_MODE", False)
+
 
 # ----------------------------------------------------
-# Logs de depuración equivalentes a los actuales
-# (controlados por SILENT_MODE)
+# Logs de depuración de configuración
 # ----------------------------------------------------
-def _log_config_debug(label: str, value: Any) -> None:
-    """Registra configuración en el logger central respetando `SILENT_MODE`.
-
-    Usamos `_logger.info` para mantener consistencia con el resto del proyecto.
-    """
+def _log_config_debug(label: str, value: object) -> None:
+    """Registra configuración en el logger central respetando `SILENT_MODE`."""
     try:
-        # `_logger.info` consultará `SILENT_MODE` internamente
         _logger.info(f"{label}: {value}")
     except Exception:
-        # Fallback seguro a print si el logger no está disponible
         if not SILENT_MODE:
             print(f"{label}: {value}")
 
 
-_log_config_debug("DEBUG PLEX_BASEURL", PLEX_BASEURL)
+_log_config_debug("DEBUG BASEURL", BASEURL)
+_log_config_debug("DEBUG PLEX_PORT", PLEX_PORT)
+_log_config_debug("DEBUG DNLA_PORT", DNLA_PORT)
 _log_config_debug("DEBUG TOKEN", "****" if PLEX_TOKEN else None)
-_log_config_debug("DEBUG EXCLUDE_LIBRARIES", EXCLUDE_LIBRARIES)
+_log_config_debug("DEBUG EXCLUDE_PLEX_LIBRARIES", EXCLUDE_PLEX_LIBRARIES)
+_log_config_debug("DEBUG EXCLUDE_DNLA_LIBRARIES", EXCLUDE_DNLA_LIBRARIES)
 _log_config_debug("DEBUG METADATA_DRY_RUN", METADATA_DRY_RUN)
-_log_config_debug("DEBUG METADATA_APPLY_CHANGES", METADATA_APPLY_CHANGES)
-_log_config_debug("DEBUG OMDB_RETRY_EMPTY_CACHE", OMDB_RETRY_EMPTY_CACHE)
-_log_config_debug("DEBUG SILENT_MODE", SILENT_MODE)
-_log_config_debug("DEBUG IMDB_VOTES_BY_YEAR", IMDB_VOTES_BY_YEAR)
 _log_config_debug("DEBUG METADATA_APPLY_CHANGES", METADATA_APPLY_CHANGES)
 _log_config_debug("DEBUG OMDB_RETRY_EMPTY_CACHE", OMDB_RETRY_EMPTY_CACHE)
 _log_config_debug("DEBUG SILENT_MODE", SILENT_MODE)

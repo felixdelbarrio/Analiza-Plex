@@ -53,7 +53,7 @@ At a high level the project is structured as a Python package (commonly named `b
 - **Configuration and logging**
   - `config.py`  
     Reads configuration from environment variables (via a `.env` file) and centralises all thresholds, flags and feature switches. Examples include:
-    - Plex connection: `PLEX_BASEURL`, `PLEX_TOKEN`.
+    - Plex connection: `BASEURL`, `PLEX_TOKEN`.
     - OMDb access: `OMDB_API_KEY`, rate-limit behaviour and retry options.
     - Libraries to exclude: `EXCLUDE_LIBRARIES`.
     - Decision thresholds: e.g. minimum Rotten Tomatoes score, minimum IMDb rating, minimum number of votes, and similar values used by the scoring and decision logic.
@@ -110,7 +110,7 @@ At a high level the project is structured as a Python package (commonly named `b
 
 Configuration is provided primarily via environment variables, typically loaded from a `.env` file at startup. Some of the most important variables are:
 
-- `PLEX_BASEURL` – Base URL of the Plex server (including protocol and port).
+- `BASEURL` – Base URL of the Plex server (including protocol and port).
 - `PLEX_TOKEN` – Plex authentication token.
 - `OMDB_API_KEY` – API key used to query OMDb.
 - `EXCLUDE_LIBRARIES` – Comma-separated list of Plex libraries to skip.
@@ -203,7 +203,7 @@ A alto nivel, el proyecto se organiza como un paquete de Python (habitualmente l
 - **Configuración y logging**
   - `config.py`  
     Lee la configuración desde variables de entorno (cargadas desde un fichero `.env`) y centraliza todos los umbrales, flags y opciones. Entre otros:
-    - Conexión a Plex: `PLEX_BASEURL`, `PLEX_TOKEN`.
+    - Conexión a Plex: `BASEURL`, `PLEX_TOKEN`.
     - Acceso a OMDb: `OMDB_API_KEY`, parámetros de reintento y limitación de uso.
     - Bibliotecas a excluir: `EXCLUDE_LIBRARIES`.
     - Umbrales de decisión: puntuaciones mínimas de Rotten Tomatoes, rating mínimo de IMDb, votos mínimos, etc.
@@ -260,7 +260,7 @@ A alto nivel, el proyecto se organiza como un paquete de Python (habitualmente l
 
 La configuración se define principalmente a través de variables de entorno, normalmente cargadas desde un fichero `.env` al inicio de la ejecución. Algunas de las más importantes son:
 
-- `PLEX_BASEURL` – URL base del servidor Plex (incluyendo protocolo y puerto).
+- `BASEURL` – URL base del servidor Plex (incluyendo protocolo y puerto).
 - `PLEX_TOKEN` – Token de autenticación de Plex.
 - `OMDB_API_KEY` – Clave de API utilizada para consultar OMDb.
 - `EXCLUDE_LIBRARIES` – Lista separada por comas de bibliotecas Plex a excluir del análisis.

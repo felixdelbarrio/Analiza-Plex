@@ -1,240 +1,119 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+"""
+Core genérico de análisis para una película, independiente del origen
+(Plex, DLNA, fichero local, etc.).
 
-from DNLA_input import DNLAInput
+Este módulo recibe un MovieInput (modelo de entrada unificado),
+obtiene datos de OMDb mediante una función inyectada y delega la
+decisión final a la lógica bayesiana de `scoring.py` y a los
+umbrales configurados en `config.py`, a través de `decide_action`.
+
+Además, utiliza `decision_logic.detect_misidentified` para producir
+la pista `misidentified_hint` cuando hay sospechas de identificación
+incorrecta.
+"""
+
+from collections.abc import Callable, Mapping
+from typing import TypedDict
+
+from backend.movie_input import MovieInput
+from backend.decision_logic import detect_misidentified
+from backend.omdb_client import extract_ratings_from_omdb
+from backend.scoring import decide_action
 
 
-# ---------------------------------------------------------------------------
-# Configuración de análisis genérico (equivalente a tus thresholds del .env)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class AnalysisConfig:
+class AnalysisRow(TypedDict, total=False):
     """
-    Thresholds de decisión para KEEP / MAYBE / DELETE, inspirados en
-    las variables del .env que usas actualmente para Plex.
+    Contrato de salida mínimo del core genérico.
 
-    No lee directamente el entorno para no acoplarse a la capa de
-    configuración: quien llame a este módulo puede construir el
-    AnalysisConfig desde env vars, config, flags CLI, etc.
+    Esta fila es luego enriquecida por capas superiores (por ejemplo,
+    el analizador específico de Plex) antes de volcarse a CSV.
     """
 
-    imdb_keep_min_rating: float = 7.0
-    imdb_keep_min_rating_with_rt: float = 6.5
-    rt_keep_min_score: int = 75
-    imdb_keep_min_votes: int = 50_000
-    imdb_delete_max_rating: float = 6.0
-    rt_delete_max_score: int = 50
+    source: str
+    library: str
+    title: str
+    year: int | None
+
+    imdb_rating: float | None
+    rt_score: int | None
+    imdb_votes: int | None
+    plex_rating: float | None
+
+    decision: str
+    reason: str
+    misidentified_hint: str
+
+    file: str
+    file_size_bytes: int | None
+
+    imdb_id_hint: str
 
 
-# ---------------------------------------------------------------------------
-# Helpers para parsear OMDb
-# ---------------------------------------------------------------------------
-
-
-def _safe_float(value: Any) -> Optional[float]:
-    try:
-        if value in (None, "", "N/A"):
-            return None
-        return float(str(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_int(value: Any) -> Optional[int]:
-    try:
-        if value in (None, "", "N/A"):
-            return None
-        s = str(value).replace(",", "")
-        return int(s)
-    except (TypeError, ValueError):
-        return None
-
-
-def _parse_rt_score(ratings: Any) -> Optional[int]:
-    """
-    Extrae el score de Rotten Tomatoes de la lista OMDb['Ratings'].
-    Espera algo tipo: [{"Source": "Rotten Tomatoes", "Value": "95%"}]
-    """
-    if not isinstance(ratings, list):
-        return None
-
-    for entry in ratings:
-        if (
-            isinstance(entry, dict)
-            and entry.get("Source") == "Rotten Tomatoes"
-            and isinstance(entry.get("Value"), str)
-        ):
-            value = entry["Value"].strip()
-            if value.endswith("%"):
-                value = value[:-1]
-            return _safe_int(value)
-
-    return None
-
-
-def extract_omdb_fields(
-    omdb_data: Mapping[str, Any],
-) -> Tuple[Optional[float], Optional[int], Optional[int]]:
-    """
-    Devuelve tupla (imdb_rating, imdb_votes, rt_score) a partir de
-    un dict de OMDb.
-    """
-    imdb_rating = _safe_float(omdb_data.get("imdbRating"))
-    imdb_votes = _safe_int(omdb_data.get("imdbVotes"))
-    rt_score = _parse_rt_score(omdb_data.get("Ratings"))
-
-    return imdb_rating, imdb_votes, rt_score
-
-
-# ---------------------------------------------------------------------------
-# Lógica de decisión genérica KEEP / MAYBE / DELETE / UNKNOWN
-# ---------------------------------------------------------------------------
-
-
-def decide_movie(
-    imdb_rating: Optional[float],
-    imdb_votes: Optional[int],
-    rt_score: Optional[int],
-    cfg: AnalysisConfig,
-) -> Tuple[str, str]:
-    """
-    Devuelve (decision, reason) usando un conjunto de reglas sencillas
-    basadas en IMDb + Rotten Tomatoes.
-
-    No asume Plex ni ningún otro backend; solo trabaja con números.
-    """
-    # Sin datos útiles → UNKNOWN
-    if imdb_rating is None and rt_score is None:
-        return "UNKNOWN", "Sin datos de rating en OMDb"
-
-    # Pre-calculamos algunas banderas
-    has_enough_votes = (
-        imdb_votes is not None and imdb_votes >= cfg.imdb_keep_min_votes
-    )
-    low_votes = imdb_votes is not None and imdb_votes < cfg.imdb_keep_min_votes
-
-    # 1) Casos con RT disponible
-    if rt_score is not None and imdb_rating is not None:
-        if has_enough_votes and (
-            imdb_rating >= cfg.imdb_keep_min_rating_with_rt
-            and rt_score >= cfg.rt_keep_min_score
-        ):
-            return "KEEP", "Buenas valoraciones IMDb + RT con suficientes votos"
-
-        if (
-            imdb_rating <= cfg.imdb_delete_max_rating
-            and rt_score <= cfg.rt_delete_max_score
-        ):
-            return "DELETE", "Malas valoraciones IMDb + RT"
-
-        # Borderline
-        if low_votes and imdb_rating >= cfg.imdb_keep_min_rating_with_rt:
-            return (
-                "MAYBE",
-                "Rating alto pero con pocas votaciones (IMDb + RT)",
-            )
-
-        return "MAYBE", "Ratings intermedios en IMDb/RT"
-
-    # 2) Solo IMDb
-    if imdb_rating is not None:
-        if has_enough_votes and imdb_rating >= cfg.imdb_keep_min_rating:
-            return "KEEP", "Buena valoración IMDb con suficientes votos"
-
-        if imdb_rating <= cfg.imdb_delete_max_rating:
-            return "DELETE", "Mala valoración IMDb"
-
-        if low_votes and imdb_rating >= cfg.imdb_keep_min_rating:
-            return (
-                "MAYBE",
-                "IMDb decente pero con pocas votaciones",
-            )
-
-        return "MAYBE", "Valoración IMDb intermedia"
-
-    # 3) Solo RT (raro, pero lo contemplamos)
-    if rt_score is not None:
-        if rt_score >= cfg.rt_keep_min_score:
-            return "KEEP", "Buena valoración en Rotten Tomatoes"
-        if rt_score <= cfg.rt_delete_max_score:
-            return "DELETE", "Mala valoración en Rotten Tomatoes"
-        return "MAYBE", "Valoración RT intermedia"
-
-    # Fallback defensivo
-    return "UNKNOWN", "No se pudo determinar decisión a partir de ratings"
-
-
-# ---------------------------------------------------------------------------
-# Núcleo de análisis genérico
-# ---------------------------------------------------------------------------
-
-FetchOmdbCallable = Callable[[str, Optional[int]], Mapping[str, Any]]
+FetchOmdbCallable = Callable[[str, int | None], Mapping[str, object]]
 
 
 def analyze_input_movie(
-    movie: DNLAInput,
+    movie: MovieInput,
     fetch_omdb: FetchOmdbCallable,
-    cfg: Optional[AnalysisConfig] = None,
-) -> Dict[str, Any]:
+) -> AnalysisRow:
     """
-    Analiza una película genérica (DNLAInput) usando OMDb y devuelve
-    un diccionario con los campos principales que espera el reporting.
+    Analiza una película genérica (`MovieInput`) usando OMDb.
 
-    No escribe ficheros ni habla con Plex/DLNA; eso lo hará la capa
-    que llame a esta función.
+    Pasos:
+      1. Llama a `fetch_omdb(title, year)` para obtener un dict tipo OMDb.
+      2. Usa `extract_ratings_from_omdb` para sacar imdb_rating, imdb_votes, rt_score.
+      3. Llama a `scoring.decide_action` (Bayes + thresholds del .env vía config.py).
+      4. Usa `decision_logic.detect_misidentified` para construir `misidentified_hint`.
+      5. Devuelve una fila `AnalysisRow` mínima, lista para ser enriquecida
+         por capas superiores (Plex, DLNA concreto, etc.).
+
+    No realiza I/O de ficheros ni logging directamente.
     """
-    if cfg is None:
-        cfg = AnalysisConfig()
-
     # ------------------------------------------------------------------
-    # 1) Consultar OMDb (capa externa, probablemente con caché)
+    # 1) Consultar OMDb mediante la función inyectada
     # ------------------------------------------------------------------
-    omdb_data: Mapping[str, Any] = {}
+    omdb_data: dict[str, object] = {}
     try:
-        omdb_data = fetch_omdb(movie.title, movie.year)
-    except Exception as exc:  # pragma: no cover (defensivo)
-        # Para el core nos limitamos a registrar el fallo en el resultado;
-        # quien llame puede loggear más detalles si lo desea.
-        omdb_data = {"Response": "False", "Error": str(exc)}
-
-    imdb_rating, imdb_votes, rt_score = extract_omdb_fields(omdb_data)
+        raw = fetch_omdb(movie.title, movie.year)
+        omdb_data = dict(raw) if isinstance(raw, Mapping) else {}
+    except Exception:
+        # Defensivo: si falla la llamada, trabajamos sin datos OMDb
+        omdb_data = {}
 
     # ------------------------------------------------------------------
-    # 2) Decisión KEEP / MAYBE / DELETE / UNKNOWN
+    # 2) Extraer ratings desde OMDb
     # ------------------------------------------------------------------
-    decision, reason = decide_movie(
+    imdb_rating, imdb_votes, rt_score = extract_ratings_from_omdb(omdb_data)
+
+    # ------------------------------------------------------------------
+    # 3) Decisión KEEP / MAYBE / DELETE / UNKNOWN vía scoring.decide_action
+    # ------------------------------------------------------------------
+    decision, reason = decide_action(
         imdb_rating=imdb_rating,
         imdb_votes=imdb_votes,
         rt_score=rt_score,
-        cfg=cfg,
+        year=movie.year,
+        metacritic_score=None,
     )
 
     # ------------------------------------------------------------------
-    # 3) Construir fila estilo report_all.csv
+    # 4) Detección de posibles películas mal identificadas
     # ------------------------------------------------------------------
-    # Campos típicos descritos en el README:
-    # - library
-    # - title
-    # - year
-    # - imdb_rating
-    # - rt_score
-    # - imdb_votes
-    # - plex_rating
-    # - decision
-    # - reason
-    # - misidentified_hint
-    # - file
-    #
-    # Añadimos además:
-    # - source
-    # - file_size_bytes
-    #
-    # Si en tu pipeline actual no existen, se pueden ignorar o mapear.
-    row: Dict[str, Any] = {
+    misidentified_hint = detect_misidentified(
+        plex_title=movie.title,
+        plex_year=movie.year,
+        omdb_data=omdb_data,
+        imdb_rating=imdb_rating,
+        imdb_votes=imdb_votes,
+        rt_score=rt_score,
+    )
+
+    # ------------------------------------------------------------------
+    # 5) Construir fila base
+    # ------------------------------------------------------------------
+    row: AnalysisRow = {
         "source": movie.source,
         "library": movie.library,
         "title": movie.title,
@@ -242,15 +121,14 @@ def analyze_input_movie(
         "imdb_rating": imdb_rating,
         "rt_score": rt_score,
         "imdb_votes": imdb_votes,
-        "plex_rating": None,  # DLNA/local no tienen rating Plex
+        "plex_rating": None,  # DNLA/local no tienen rating Plex aquí
         "decision": decision,
         "reason": reason,
-        "misidentified_hint": "",
+        "misidentified_hint": misidentified_hint,
         "file": movie.file_path,
         "file_size_bytes": movie.file_size_bytes,
     }
 
-    # Podemos incluir info de pista IMDb si se quiere arrastrar:
     if movie.imdb_id_hint:
         row["imdb_id_hint"] = movie.imdb_id_hint
 

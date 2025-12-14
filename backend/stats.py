@@ -1,7 +1,6 @@
-# backend/stats.py
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import Final
 
 import pandas as pd
 
@@ -26,7 +25,7 @@ from backend import logger as _logger
 # -------------------------------------------------------------------
 
 
-def _log_stats(msg: str) -> None:
+def _log_stats(msg: object) -> None:
     """Logea vía el logger central (respeta SILENT_MODE internamente)."""
     try:
         _logger.info(str(msg))
@@ -40,31 +39,31 @@ def _log_stats(msg: str) -> None:
 # -------------------------------------------------------------------
 
 # Media global IMDb (para bayes)
-_GLOBAL_IMDB_MEAN_FROM_CACHE: Optional[float] = None
-_GLOBAL_IMDB_MEAN_SOURCE: Optional[str] = None
-_GLOBAL_IMDB_MEAN_COUNT: Optional[int] = None
+_GLOBAL_IMDB_MEAN_FROM_CACHE: float | None = None
+_GLOBAL_IMDB_MEAN_SOURCE: str | None = None
+_GLOBAL_IMDB_MEAN_COUNT: int | None = None
 
 # Distribución de ratings (ordenada)
-_RATINGS_LIST: Optional[List[float]] = None
+_RATINGS_LIST: list[float] | None = None
 _RATINGS_COUNT: int = 0
 
 # Distribución de ratings SOLO para títulos SIN RT
-_RATINGS_NO_RT_LIST: Optional[List[float]] = None
+_RATINGS_NO_RT_LIST: list[float] | None = None
 _RATINGS_NO_RT_COUNT: int = 0
 
 # Auto-umbrales de rating KEEP / DELETE
-_AUTO_KEEP_RATING_THRESHOLD: Optional[float] = None
-_AUTO_DELETE_RATING_THRESHOLD: Optional[float] = None
+_AUTO_KEEP_RATING_THRESHOLD: float | None = None
+_AUTO_DELETE_RATING_THRESHOLD: float | None = None
 
 # Auto-umbrales de rating KEEP / DELETE para pelis SIN RT
-_AUTO_KEEP_RATING_THRESHOLD_NO_RT: Optional[float] = None
-_AUTO_DELETE_RATING_THRESHOLD_NO_RT: Optional[float] = None
+_AUTO_KEEP_RATING_THRESHOLD_NO_RT: float | None = None
+_AUTO_DELETE_RATING_THRESHOLD_NO_RT: float | None = None
 
 
 # -------------------------------------------------------------------
 # Media global desde omdb_cache (para bayes)
 # -------------------------------------------------------------------
-def _compute_global_imdb_mean_from_cache_raw() -> Tuple[Optional[float], int]:
+def _compute_global_imdb_mean_from_cache_raw() -> tuple[float | None, int]:
     """
     Recorre omdb_cache y calcula la media de imdbRating para todas las
     entradas que tengan un rating válido. Devuelve (media, n_validos).
@@ -73,8 +72,7 @@ def _compute_global_imdb_mean_from_cache_raw() -> Tuple[Optional[float], int]:
         _log_stats("INFO [stats] omdb_cache vacío o no dict; sin ratings IMDb.")
         return None, 0
 
-    # Recolectamos ratings con una comprensión segura
-    ratings: List[float] = []
+    ratings: list[float] = []
     for data in omdb_cache.values():
         if not isinstance(data, dict):
             continue
@@ -124,21 +122,20 @@ def get_global_imdb_mean_from_cache() -> float:
     return _GLOBAL_IMDB_MEAN_FROM_CACHE
 
 
-def get_global_imdb_mean_info() -> Tuple[float, str, int]:
+def get_global_imdb_mean_info() -> tuple[float, str, int]:
     """
     Devuelve (media, fuente, n_validos) de la media global IMDb usada como C.
     """
-    return (
-        get_global_imdb_mean_from_cache(),
-        _GLOBAL_IMDB_MEAN_SOURCE or "unknown",
-        _GLOBAL_IMDB_MEAN_COUNT or 0,
-    )
+    mean = get_global_imdb_mean_from_cache()
+    source = _GLOBAL_IMDB_MEAN_SOURCE or "unknown"
+    count = _GLOBAL_IMDB_MEAN_COUNT or 0
+    return mean, source, count
 
 
 # -------------------------------------------------------------------
 # Media IMDb a partir del DataFrame (para el dashboard/resumen)
 # -------------------------------------------------------------------
-def compute_global_imdb_mean_from_df(df_all: pd.DataFrame) -> Optional[float]:
+def compute_global_imdb_mean_from_df(df_all: pd.DataFrame) -> float | None:
     """
     Calcula la media IMDb sobre el DataFrame completo (columna imdb_rating).
 
@@ -149,7 +146,6 @@ def compute_global_imdb_mean_from_df(df_all: pd.DataFrame) -> Optional[float]:
     if "imdb_rating" not in df_all.columns:
         return None
 
-    # Convertimos a numérico y soltamos NaN
     ratings = pd.to_numeric(df_all["imdb_rating"], errors="coerce").dropna()
     if ratings.empty:
         return None
@@ -160,13 +156,13 @@ def compute_global_imdb_mean_from_df(df_all: pd.DataFrame) -> Optional[float]:
 # -------------------------------------------------------------------
 # Ratings list (ordenada) para percentiles (TODOS los títulos)
 # -------------------------------------------------------------------
-def _load_imdb_ratings_list_from_cache() -> Tuple[List[float], int]:
+def _load_imdb_ratings_list_from_cache() -> tuple[list[float], int]:
     global _RATINGS_LIST, _RATINGS_COUNT
 
     if _RATINGS_LIST is not None:
         return _RATINGS_LIST, _RATINGS_COUNT
 
-    ratings: List[float] = []
+    ratings: list[float] = []
     if isinstance(omdb_cache, dict):
         for data in omdb_cache.values():
             if not isinstance(data, dict):
@@ -188,7 +184,7 @@ def _load_imdb_ratings_list_from_cache() -> Tuple[List[float], int]:
 # -------------------------------------------------------------------
 # Ratings list SOLO de títulos SIN RT
 # -------------------------------------------------------------------
-def _load_imdb_ratings_list_no_rt_from_cache() -> Tuple[List[float], int]:
+def _load_imdb_ratings_list_no_rt_from_cache() -> tuple[list[float], int]:
     """
     Igual que _load_imdb_ratings_list_from_cache, pero SOLO para
     títulos cuya entrada de OMDb NO tiene Rotten Tomatoes (rt_score is None).
@@ -198,7 +194,7 @@ def _load_imdb_ratings_list_no_rt_from_cache() -> Tuple[List[float], int]:
     if _RATINGS_NO_RT_LIST is not None:
         return _RATINGS_NO_RT_LIST, _RATINGS_NO_RT_COUNT
 
-    ratings: List[float] = []
+    ratings: list[float] = []
     if isinstance(omdb_cache, dict):
         for data in omdb_cache.values():
             if not isinstance(data, dict):
@@ -224,7 +220,7 @@ def _load_imdb_ratings_list_no_rt_from_cache() -> Tuple[List[float], int]:
     return _RATINGS_NO_RT_LIST, _RATINGS_NO_RT_COUNT
 
 
-def _percentile(sorted_vals: List[float], p: float) -> Optional[float]:
+def _percentile(sorted_vals: list[float], p: float) -> float | None:
     """
     Percentil sencillo sobre lista ORDENADA de floats.
     """

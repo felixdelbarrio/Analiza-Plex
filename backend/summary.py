@@ -1,5 +1,6 @@
-# backend/summary.py
-from typing import Any, Dict, Optional
+from __future__ import annotations
+
+from typing import Final
 
 import pandas as pd
 
@@ -10,23 +11,42 @@ from backend.stats import (
 )
 
 
-def _sum_size(df: pd.DataFrame, mask: Optional[pd.Series] = None) -> Optional[float]:
-    """Suma la columna `file_size_gb` filtrada por mask si existe, devuelve None si la columna no existe."""
-    if "file_size_gb" not in df.columns:
+FILE_SIZE_COL: Final[str] = "file_size_gb"
+DECISION_COL: Final[str] = "decision"
+
+
+def _sum_size(df: pd.DataFrame, mask: pd.Series | None = None) -> float | None:
+    """Suma la columna `file_size_gb` filtrada por mask si existe.
+
+    Devuelve:
+      - float con la suma en GB.
+      - None si la columna no existe o si hay un error al sumar.
+    """
+    if FILE_SIZE_COL not in df.columns:
         return None
-    series = df["file_size_gb"]
+
+    series = df[FILE_SIZE_COL]
     if mask is not None:
-        series = series.loc[mask]
-    # Convertir a float y manejar NaNs
+        # Nos aseguramos de alinear índices; si falla, log y devolvemos None
+        try:
+            series = series.loc[mask]
+        except Exception as exc:  # pragma: no cover (defensivo)
+            _logger.warning(
+                f"Error aplicando máscara en '{FILE_SIZE_COL}': {exc}. "
+                "Devolviendo None."
+            )
+            return None
+
     try:
         total = float(series.sum(skipna=True))
-    except Exception:
+    except Exception:  # pragma: no cover (defensivo)
         _logger.warning("Error sumando 'file_size_gb', devolviendo None")
         return None
+
     return total
 
 
-def compute_summary(df_all: pd.DataFrame) -> Dict[str, Any]:
+def compute_summary(df_all: pd.DataFrame) -> dict[str, object]:
     """Calcula métricas resumen a partir del DataFrame completo.
 
     Acepta un DataFrame (posiblemente vacío). No lanza si faltan columnas: en
@@ -41,9 +61,16 @@ def compute_summary(df_all: pd.DataFrame) -> Dict[str, Any]:
     # Tamaño total en GB (si existe la columna file_size_gb)
     total_size = _sum_size(df_all)
 
+    # Medias IMDb (aunque falte 'decision', estas métricas siguen siendo útiles)
+    imdb_mean_df = compute_global_imdb_mean_from_df(df_all)
+    imdb_mean_cache = get_global_imdb_mean_from_cache()
+
     # Si falta la columna 'decision', lo registramos y devolvemos ceros coherentes
-    if "decision" not in df_all.columns:
-        _logger.warning("Columna 'decision' no encontrada en df_all; devolviendo resumen con conteos 0")
+    if DECISION_COL not in df_all.columns:
+        _logger.warning(
+            "Columna 'decision' no encontrada en df_all; "
+            "devolviendo resumen con conteos 0."
+        )
         return {
             "total_count": total_count,
             "total_size_gb": total_size,
@@ -55,14 +82,15 @@ def compute_summary(df_all: pd.DataFrame) -> Dict[str, Any]:
             "delete_size_gb": None,
             "maybe_count": 0,
             "maybe_size_gb": None,
-            "imdb_mean_df": compute_global_imdb_mean_from_df(df_all),
-            "imdb_mean_cache": get_global_imdb_mean_from_cache(),
+            "imdb_mean_df": imdb_mean_df,
+            "imdb_mean_cache": imdb_mean_cache,
         }
 
-    # Masks
-    keep_mask = df_all["decision"] == "KEEP"
-    del_mask = df_all["decision"] == "DELETE"
-    maybe_mask = df_all["decision"] == "MAYBE"
+    # Masks por decisión
+    decisions = df_all[DECISION_COL]
+    keep_mask = decisions == "KEEP"
+    del_mask = decisions == "DELETE"
+    maybe_mask = decisions == "MAYBE"
     dm_mask = del_mask | maybe_mask
 
     keep_count = int(keep_mask.sum())
@@ -74,10 +102,6 @@ def compute_summary(df_all: pd.DataFrame) -> Dict[str, Any]:
     delete_size = _sum_size(df_all, del_mask)
     maybe_size = _sum_size(df_all, maybe_mask)
     dm_size = _sum_size(df_all, dm_mask)
-
-    # Medias IMDb
-    imdb_mean_df: Optional[float] = compute_global_imdb_mean_from_df(df_all)
-    imdb_mean_cache: float = get_global_imdb_mean_from_cache()
 
     return {
         "total_count": total_count,

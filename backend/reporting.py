@@ -1,410 +1,227 @@
+from __future__ import annotations
+
 import csv
 import json
 import os
 import tempfile
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Final
 
 from backend import logger as _logger
 
 
-def write_all_csv(path: str, rows: List[Dict[str, Any]]) -> None:
-    """
-    Escribe el CSV completo con todas las películas analizadas.
-    """
-    if not rows:
-        _logger.info("No hay filas para escribir en report_all.csv")
-        return
+# ============================================================
+#                   UTILIDADES INTERNAS CSV
+# ============================================================
 
-    fieldnames = list(rows[0].keys())
-    # Escritura atómica
+
+def _collect_fieldnames(rows: Iterable[Mapping[str, object]]) -> list[str]:
+    """
+    Devuelve la unión de todas las claves presentes en todas las filas.
+
+    Esto evita inconsistencias si algunas filas tienen keys extra
+    o si faltan keys en la primera fila.
+    """
+    fieldset: set[str] = set()
+    for r in rows:
+        fieldset.update(str(k) for k in r.keys())
+    return sorted(fieldset)
+
+
+def _write_dict_rows_csv(
+    path: str,
+    rows: Iterable[Mapping[str, object]],
+    *,
+    default_fieldnames: list[str] | None = None,
+    empty_message: str | None = None,
+    kind_label: str = "CSV",
+) -> None:
+    """
+    Escritura atómica de CSV desde un iterable de dict/Mapping.
+
+    - Si hay filas → usa unión de sus claves como cabecera.
+    - Si no hay filas → usa default_fieldnames, o no escribe nada.
+    """
     pathp = Path(path)
     dirpath = pathp.parent
     dirpath.mkdir(parents=True, exist_ok=True)
+
+    rows_list = list(rows)  # para poder iterar varias veces
+
+    if rows_list:
+        fieldnames = _collect_fieldnames(rows_list)
+    else:
+        if default_fieldnames is None:
+            if empty_message:
+                _logger.info(empty_message)
+            else:
+                _logger.info(f"No hay filas para escribir en {kind_label}.")
+            return
+        fieldnames = list(default_fieldnames)
+
     try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath), newline="") as tf:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+            dir=str(dirpath),
+            newline="",
+        ) as tf:
             writer = csv.DictWriter(tf, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(rows)
+            if rows_list:
+                writer.writerows(rows_list)
             temp_name = tf.name
+
         os.replace(temp_name, str(pathp))
-        _logger.info(f"CSV completo escrito en {path}")
-    except Exception as e:
-        _logger.error(f"Error escribiendo CSV completo en {path}: {e}")
+        _logger.info(f"{kind_label} escrito en {path}")
+    except Exception as exc:
+        _logger.error(f"Error escribiendo {kind_label} en {path}: {exc}")
 
 
-def write_filtered_csv(path: str, rows: List[Dict[str, Any]]) -> None:
+# ============================================================
+#                    FUNCIONES PÚBLICAS CSV
+# ============================================================
+
+
+def write_all_csv(path: str, rows: Iterable[Mapping[str, object]]) -> None:
+    """Escribe el CSV completo con todas las películas analizadas."""
+    _write_dict_rows_csv(
+        path,
+        rows,
+        empty_message="No hay filas para escribir en report_all.csv",
+        kind_label="CSV completo",
+    )
+
+
+def write_filtered_csv(path: str, rows: Iterable[Mapping[str, object]]) -> None:
+    """Escribe el CSV filtrado con DELETE/MAYBE."""
+    _write_dict_rows_csv(
+        path,
+        rows,
+        empty_message="No hay filas filtradas para escribir en report_filtered.csv",
+        kind_label="CSV filtrado",
+    )
+
+
+_STANDARD_SUGGESTION_FIELDS: Final[list[str]] = [
+    "plex_guid",
+    "library",
+    "plex_title",
+    "plex_year",
+    "omdb_title",
+    "omdb_year",
+    "imdb_rating",
+    "imdb_votes",
+    "suggestions_json",
+]
+
+
+def write_suggestions_csv(path: str, rows: Iterable[Mapping[str, object]]) -> None:
+    """Escribe el CSV con sugerencias de metadata, incluso vacío."""
+    rows_list = list(rows)
+
+    if not rows_list:
+        _logger.info(
+            "No hay sugerencias de metadata para escribir. "
+            "Se crea un CSV vacío con solo cabeceras."
+        )
+
+    _write_dict_rows_csv(
+        path,
+        rows_list,
+        default_fieldnames=_STANDARD_SUGGESTION_FIELDS,
+        kind_label="CSV de sugerencias",
+    )
+
+
+# ============================================================
+#                INFORME HTML INTERACTIVO
+# ============================================================
+
+# reporting.py está en backend/, así que el root del proyecto es parent de ese dir.
+_PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
+TEMPLATE_PATH: Final[Path] = (
+    _PROJECT_ROOT / "frontend" / "templates" / "filtered_report.html"
+)
+
+
+def write_interactive_html(
+    path: str,
+    rows: Iterable[Mapping[str, object]],
+    *,
+    title: str = "Plex Movies Cleaner — Informe interactivo",
+    subtitle: str = "Vista rápida de las películas marcadas como DELETE / MAYBE.",
+) -> None:
     """
-    Escribe el CSV filtrado con DELETE/MAYBE.
+    Genera un HTML usando una plantilla externa en
+    `frontend/templates/filtered_report.html`.
+
+    La plantilla debe contener los placeholders:
+      - __TITLE__
+      - __SUBTITLE__
+      - __ROWS_JSON__
     """
-    if not rows:
-        _logger.info("No hay filas filtradas para escribir en report_filtered.csv")
-        return
+    rows_list = list(rows)
 
-    fieldnames = list(rows[0].keys())
-    pathp = Path(path)
-    dirpath = pathp.parent
-    dirpath.mkdir(parents=True, exist_ok=True)
-    try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath), newline="") as tf:
-            writer = csv.DictWriter(tf, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-            temp_name = tf.name
-        os.replace(temp_name, str(pathp))
-        _logger.info(f"CSV filtrado escrito en {path}")
-    except Exception as e:
-        _logger.error(f"Error escribiendo CSV filtrado en {path}: {e}")
-
-
-def write_suggestions_csv(path: str, rows: List[Dict[str, Any]]) -> None:
-    """
-    Escribe el CSV con sugerencias de metadata.
-
-    Si no hay filas, se escribe igualmente un CSV vacío con sólo cabeceras
-    estándar (incluyendo 'library') para que el dashboard no falle al leerlo.
-    """
-    standard_fieldnames = [
-        "plex_guid",
-        "library",
-        "plex_title",
-        "plex_year",
-        "omdb_title",
-        "omdb_year",
-        "imdb_rating",
-        "imdb_votes",
-        "suggestions_json",
+    processed_rows: list[dict[str, object]] = [
+        {
+            "poster_url": r.get("poster_url"),
+            "library": r.get("library"),
+            "title": r.get("title"),
+            "year": r.get("year"),
+            "imdb_rating": r.get("imdb_rating"),
+            "rt_score": r.get("rt_score"),
+            "imdb_votes": r.get("imdb_votes"),
+            "decision": r.get("decision"),
+            "reason": r.get("reason"),
+            "misidentified_hint": r.get("misidentified_hint"),
+            "file": r.get("file"),
+        }
+        for r in rows_list
     ]
 
-    if rows:
-        fieldnames = list(rows[0].keys())
-    else:
-        fieldnames = standard_fieldnames
-        _logger.info(
-            "No hay sugerencias de metadata para escribir. Se crea un CSV vacío con solo cabeceras."
-        )
-
-    pathp = Path(path)
-    dirpath = pathp.parent
-    dirpath.mkdir(parents=True, exist_ok=True)
-    try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath), newline="") as tf:
-            writer = csv.DictWriter(tf, fieldnames=fieldnames)
-            writer.writeheader()
-            if rows:
-                writer.writerows(rows)
-            temp_name = tf.name
-        os.replace(temp_name, str(pathp))
-        _logger.info(f"Sugerencias de metadata escritas en {path}")
-    except Exception as e:
-        _logger.error(f"Error escribiendo sugerencias de metadata en {path}: {e}")
-
-
-def write_interactive_html(path: str, rows: List[Dict[str, Any]]) -> None:
-    """
-    Genera un informe HTML interactivo (DataTables + Chart.js) a partir de
-    las filas filtradas (DELETE/MAYBE).
-
-    El HTML resultante se parece al antiguo `report_filtered.html`:
-      - Tabla interactiva con filtros/ordenación
-      - Gráfico de barras por decisión
-      - Gráfico de barras por biblioteca
-    """
-    # Preparamos las filas que se pasarán al JS.
-    # Seleccionamos un subconjunto de campos relevantes.
-    processed_rows: List[Dict[str, Any]] = []
-    for r in rows:
-        processed_rows.append(
-            {
-                "poster_url": r.get("poster_url"),
-                "library": r.get("library"),
-                "title": r.get("title"),
-                "year": r.get("year"),
-                "imdb_rating": r.get("imdb_rating"),
-                "rt_score": r.get("rt_score"),
-                "imdb_votes": r.get("imdb_votes"),
-                "decision": r.get("decision"),
-                "reason": r.get("reason"),
-                "misidentified_hint": r.get("misidentified_hint"),
-                "file": r.get("file"),
-            }
-        )
-
     rows_json = json.dumps(processed_rows, ensure_ascii=False)
+    # Escape defensivo para evitar que una cadena contenga </script
+    rows_json_safe = rows_json.replace("</script", "<\\/script")
 
-    # Plantilla HTML con placeholder para rows_json — evita f-strings y conflictos
-    # Los datos JSON se insertan en una etiqueta <script type="application/json">
-    # y luego se parsean en JS con JSON.parse(...) para evitar que cadenas
-    # que contengan '</script>' rompan la página.
-    html_template = """<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<title>Plex Movies Cleaner — Informe interactivo</title>
+    if not TEMPLATE_PATH.exists():
+        raise FileNotFoundError(
+            f"Plantilla HTML no encontrada en {TEMPLATE_PATH}. "
+            "Asegúrate de crear frontend/templates/filtered_report.html"
+        )
 
-<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    try:
+        html_template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    except Exception as exc:
+        _logger.error(f"No se pudo leer la plantilla HTML {TEMPLATE_PATH}: {exc}")
+        raise
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    html = (
+        html_template
+        .replace("__TITLE__", title)
+        .replace("__SUBTITLE__", subtitle)
+        .replace("__ROWS_JSON__", rows_json_safe)
+    )
 
-<style>
-body {
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-    margin: 1.5rem;
-    background: #0b1120;
-    color: #e5e7eb;
-}
-
-h1 {
-    margin-bottom: 0.25rem;
-}
-
-.subtitle {
-    color: #9ca3af;
-    margin-bottom: 1.5rem;
-}
-
-.container {
-    display: grid;
-    grid-template-columns: 2fr 1fr;
-    gap: 1.5rem;
-}
-
-table.dataTable thead th {
-    background-color: #111827;
-    color: #e5e7eb;
-}
-
-table.dataTable tbody tr {
-    background-color: #020617;
-    color: #e5e7eb;
-}
-
-.tag-KEEP {
-    background-color: #166534;
-    color: #dcfce7;
-    padding: 0.15rem 0.4rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-}
-
-.tag-DELETE {
-    background-color: #7f1d1d;
-    color: #fee2e2;
-    padding: 0.15rem 0.4rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-}
-
-.tag-MAYBE {
-    background-color: #92400e;
-    color: #ffedd5;
-    padding: 0.15rem 0.4rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-}
-
-.tag-UNKNOWN {
-    background-color: #374151;
-    color: #e5e7eb;
-    padding: 0.15rem 0.4rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-}
-
-.poster-img {
-    width: 50px;
-    height: auto;
-    border-radius: 0.25rem;
-    object-fit: cover;
-}
-
-.badge {
-    display: inline-flex;
-    padding: 0.1rem 0.4rem;
-    border-radius: 999px;
-    font-size: 0.7rem;
-    background-color: #1f2937;
-    color: #e5e7eb;
-}
-
-.charts {
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
-}
-
-.chart-card {
-    background-color: #020617;
-    border-radius: 0.75rem;
-    padding: 1rem;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.6);
-    border: 1px solid #1f2937;
-}
-</style>
-</head>
-<body>
-
-<h1>🎬 Plex Movies Cleaner — Informe interactivo</h1>
-<p class="subtitle">Vista rápida de las películas marcadas como DELETE / MAYBE.</p>
-
-<div class="container">
-  <div>
-    <table id="movies" class="display" style="width:100%">
-      <thead>
-        <tr>
-          <th>Poster</th>
-          <th>Library</th>
-          <th>Title</th>
-          <th>Year</th>
-          <th>IMDb</th>
-          <th>RT</th>
-          <th>IMDb votes</th>
-          <th>Decision</th>
-          <th>Reason</th>
-          <th>MisID hint</th>
-          <th>File</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <div class="charts">
-    <div class="chart-card">
-      <h3>Decisiones</h3>
-      <canvas id="decisionChart"></canvas>
-    </div>
-    <div class="chart-card">
-      <h3>Películas por biblioteca</h3>
-      <canvas id="libraryChart"></canvas>
-    </div>
-  </div>
-</div>
-
-<script id="rows-data" type="application/json">__ROWS_JSON__</script>
-<script>
-// Datos generados por Python
-const rows = JSON.parse(document.getElementById("rows-data").textContent);
-
-// Construcción de tabla
-const tableData = rows.map(r => {
-  const poster = r.poster_url
-    ? `<img src="${r.poster_url}" class="poster-img" loading="lazy">`
-    : "";
-
-  const decisionClass = r.decision ? `tag-${r.decision}` : "tag-UNKNOWN";
-  const decisionLabel = r.decision || "UNKNOWN";
-
-  return [
-    poster,
-    r.library || "",
-    r.title || "",
-    r.year || "",
-    r.imdb_rating != null ? (typeof r.imdb_rating.toFixed === 'function' ? r.imdb_rating.toFixed(1) : r.imdb_rating) : "",
-    r.rt_score != null ? r.rt_score + "%" : "",
-    r.imdb_votes != null ? r.imdb_votes.toLocaleString() : "",
-    `<span class="${decisionClass}">${decisionLabel}</span>`,
-    r.reason || "",
-    r.misidentified_hint || "",
-    r.file || "",
-  ];
-});
-
-$(document).ready(function() {
-  $('#movies').DataTable({
-    data: tableData,
-    pageLength: 25,
-    order: [[4, 'asc']], // por IMDb ascendente (peores primero)
-  });
-});
-
-// Gráfico de decisiones
-(function() {
-  const counts = {};
-  for (const r of rows) {
-    const d = r.decision || "UNKNOWN";
-    counts[d] = (counts[d] || 0) + 1;
-  }
-  const labels = Object.keys(counts);
-  const values = labels.map(k => counts[k]);
-
-  const ctx = document.getElementById('decisionChart').getContext('2d');
-  new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Número de películas',
-        data: values,
-      }],
-    },
-    options: {
-      responsive: true,
-      plugins: {
-        legend: { display: false },
-      },
-      scales: {
-        x: { ticks: { color: '#e5e7eb' } },
-        y: { ticks: { color: '#e5e7eb' } },
-      },
-    },
-  });
-})();
-
-// Gráfico por biblioteca (top 10)
-(function() {
-  const counts = {};
-  for (const r of rows) {
-    const lib = r.library || 'Unknown';
-    counts[lib] = (counts[lib] || 0) + 1;
-  }
-  const entries = Object.entries(counts).sort((a,b) => b[1] - a[1]).slice(0, 10);
-  const labels = entries.map(e => e[0]);
-  const values = entries.map(e => e[1]);
-
-  const ctx = document.getElementById('libraryChart').getContext('2d');
-  new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Películas',
-        data: values,
-      }],
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      plugins: {
-        legend: { display: false },
-      },
-      scales: {
-        x: { ticks: { color: '#e5e7eb' } },
-        y: { ticks: { color: '#e5e7eb' } },
-      },
-    },
-  });
-})();
-</script>
-
-</body>
-</html>
-"""
-
-    # Reemplazamos el placeholder por el JSON serializado (sin usar f-strings)
-    html = html_template.replace("__ROWS_JSON__", rows_json)
-
+    # Escritura atómica del HTML
     pathp = Path(path)
     dirpath = pathp.parent
     dirpath.mkdir(parents=True, exist_ok=True)
+
     try:
-        # Escritura atómica del HTML
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(dirpath), newline="") as tf:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+            dir=str(dirpath),
+            newline="",
+        ) as tf:
             tf.write(html)
             temp_name = tf.name
+
         os.replace(temp_name, str(pathp))
         _logger.info(f"Informe HTML interactivo escrito en {path}")
-    except Exception as e:
-        _logger.error(f"Error escribiendo informe HTML en {path}: {e}")
+    except Exception as exc:
+        _logger.error(f"Error escribiendo informe HTML en {path}: {exc}")

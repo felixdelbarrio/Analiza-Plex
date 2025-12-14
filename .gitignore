@@ -14,3 +14,7 @@ __pycache__/
 report_*.csv
 report_*.html
 metadata_*.*
+
+# metadatos de empaquetado
+*.egg-info/
+*.egg
