@@ -1,484 +1,446 @@
-# 🧩 Plex Movies Cleaner — Arquitectura técnica (README EXTRA)
+# Analiza Movies — Architecture Overview
 
-Este documento está pensado **para desarrolladores** que quieran entender cómo está organizado el proyecto, cómo fluyen los datos entre backend y frontend, y qué módulos dependen de cuáles.
-
-No sustituyen al `README.md` principal: lo complementa a nivel de arquitectura.
-
----
-
-## 1. Visión general
-
-El sistema se divide en dos capas:
-
-- **backend/** → lógica de negocio pura:
-  - Conexión a Plex
-  - Llamadas a OMDb + caché
-  - Scoring (KEEP/DELETE/MAYBE/UNKNOWN)
-  - Detección de misidentificaciones
-  - Generación de informes (CSV + HTML)
-  - Borrado físico de archivos
-
-- **frontend/** → visualización y control manual:
-  - Dashboard en Streamlit (`dashboard.py`)
-  - Componentes reutilizables (AgGrid, tarjetas de detalle)
-  - Pestañas modulares
-  - Gráficos (Altair)
-  - Interacción de usuario para borrados, filtros, etc.
-
-El **flujo típico** es:
-
-1. `analiza_plex.py` recorre Plex y genera los CSV.
-2. `dashboard.py` carga esos CSV ya preparados y los muestra organizados en pestañas.
+This document describes the internal architecture of **Analiza Movies**, outlining module responsibilities, data flows, and interactions between components.  
+The goal is to provide a clear, high‑level understanding of how the system works and how each part fits together.
 
 ---
 
-## 2. Módulos backend y responsabilidades
+## 1. High‑Level Architecture
 
-### 2.1. `backend/config.py`
+Analiza Movies follows a **modular, pipeline‑oriented architecture**:
 
-- Lee variables de entorno (`.env`).
-- Expone constantes y parámetros:
-  - Conexión a Plex (`PLEX_BASEURL`, `PLEX_TOKEN`).
-  - Clave OMDb (`OMDB_API_KEY`).
-  - Prefijos de salida (`OUTPUT_PREFIX`, `METADATA_OUTPUT_PREFIX`).
-  - Flags de comportamiento (`SILENT_MODE`, `DELETE_DRY_RUN`, etc.).
-  - Umbrales de scoring IMDb/RT (por ejemplo `IMDB_KEEP_MIN_RATING`, `RT_KEEP_MIN_SCORE`, etc.).
+1. **Input Layer**  
+   - Retrieves raw data from Plex or DLNA sources.
+   - Optional external enrichment (OMDb, Wikipedia).
 
-👉 Todos los módulos que necesitan opciones externas las obtienen aquí.
+2. **Processing & Normalization Layer**  
+   - Transforms raw inputs into structured movie analysis rows.
+   - Detects metadata issues and applies normalization logic.
 
----
+3. **Scoring & Decision Layer**  
+   - Applies heuristics and Bayesian‑style scoring.  
+   - Classifies movies (KEEP, DELETE, UNKNOWN, MISIDENTIFIED).
 
-### 2.2. `backend/plex_client.py`
+4. **Reporting & Output Layer**  
+   - Generates CSV reports.  
+   - Calculates aggregate statistics.  
+   - Builds visual charts for the dashboard.
 
-Responsable de todo lo relacionado con Plex:
+5. **Presentation Layer (Dashboard)**  
+   - Streamlit UI for browsing, filtering, and deciding.  
+   - Supports deletion workflows with safety rules.
 
-- Conexión (`connect_plex()`).
-- Obtención de secciones (bibliotecas) y filtrado por tipo (`movie`) y exclusiones (`EXCLUDE_LIBRARIES`).
-- Extracción de la información de fichero por película (`get_movie_file_info()`).
-- Extracción de `imdb_id` a partir del `guid` de Plex (`get_imdb_id_from_plex_guid()`).
-- Obtención del mejor título de búsqueda para OMDb (`get_best_search_title()`).
-
-👉 No tiene lógica de scoring ni reporting: solo *habla con Plex* y devuelve datos.
-
----
-
-### 2.3. `backend/omdb_client.py`
-
-Capa de acceso a OMDb con buena higiene:
-
-- `search_omdb_by_imdb_id(imdb_id)`
-- `search_omdb_with_candidates(título, año)`
-- `extract_ratings_from_omdb(omdb_json) -> (imdb_rating, imdb_votes, rt_score)`
-- Gestión de:
-  - Caché local (`omdb_cache.json`).
-  - Límite de peticiones (`Request limit reached!`).
-  - Reintentos con espera (`OMDB_RATE_LIMIT_WAIT_SECONDS`, `OMDB_RATE_LIMIT_MAX_RETRIES`).
-  - Flag `OMDB_RETRY_EMPTY_CACHE` para rellenar huecos en llamadas previas.
-
-👉 El resto del backend asume que esta capa ya entrega datos estables (o `None`).
+6. **Execution / Orchestration Layer**  
+   - Entrypoints coordinate the pipeline and enforce config & logging.
 
 ---
 
-### 2.4. `backend/scoring.py`
+## 2. Module Responsibilities
 
-Encapsula la **lógica de scoring puro**:
+### 2.1 Input & External Services
 
-- `compute_scoring(imdb_rating, imdb_votes, rt_score) -> dict`
-  - Devuelve un objeto enriquecido:
-
-    ```python
-    {
-        "decision": "KEEP" | "DELETE" | "MAYBE" | "UNKNOWN",
-        "reason": "explicación humana",
-        "rule": "KEEP_IMDB" | "DELETE_IMDB" | "FALLBACK_MAYBE" | ...,
-        "inputs": {...}
-    }
-    ```
-
-- `decide_action(imdb_rating, imdb_votes, rt_score) -> (decision, reason)`
-  - Wrapper histórico para mantener compatibilidad.
-  - Internamente llama a `compute_scoring`.
-
-👉 Todos los umbrales y “reglas” se definen aquí. Si algún día cambias la política de limpieza, este es el módulo clave.
+| Module | Purpose |
+|-------|---------|
+| `plex_client.py` | Connects to Plex, retrieves libraries/movies, handles deletion operations. |
+| `omdb_client.py` | Queries OMDb, extracts ratings, applies retry logic, stores JSON cache. |
+| `wiki_client.py` | Fetches and caches Wikipedia data. |
+| `DNLA_input.py` | Abstracts DLNA‑style inputs when Plex is not used. |
 
 ---
 
-### 2.5. `backend/decision_logic.py`
+## 3. Processing & Normalization Pipeline
 
-Agrupa la lógica de *interpretación* y ordenación:
+### 3.1 Raw Input → Normalized Row
 
-- `detect_misidentified(...) -> str`
-  - Usa título/año Plex vs OMDb.
-  - Añade pistas si:
-    - Títulos difieren notablemente.
-    - Años se alejan más de 1 año.
-    - Rating muy bajo con muchos votos.
-    - RT extremadamente bajo.
+Key modules:
 
-- `sort_filtered_rows(rows) -> rows_ordenadas`
-  - Ordena películas DELETE/MAYBE para el CSV filtrado:
-    1. DELETE → MAYBE → KEEP → UNKNOWN
-    2. Más votos IMDb.
-    3. Mayor rating IMDb.
-    4. Mayor tamaño de fichero.
+- **`analyze_input_core.py` / `analyzer.py`**  
+  Central transformation pipeline:
+  - Normalizes titles, years, IDs.
+  - Validates fields.
+  - Extracts relevant OMDb/Wiki attributes.
+  - Combines Plex and external metadata.
 
-👉 No decide por sí mismo KEEP/DELETE: solo ordena y detecta “huele mal”.
+- **`metadata.py`**  
+  Detects:
+  - Wrong years  
+  - Duplicate / conflicting entries  
+  - Very low metadata completeness  
 
----
-
-### 2.6. `backend/metadata_fix.py`
-
-- Compara metadata de Plex con OMDb y genera sugerencias estructuradas:
-  - Posibles cambios de título/año.
-  - Campo `action` sugerido: `"Fix title"`, `"Fix year"`, `"Fix title & year"`, etc.
-  - JSON de detalle (`suggestions_json`).
-
-- Soporta modos:
-  - `METADATA_DRY_RUN` → solo sugerencias.
-  - `METADATA_APPLY_CHANGES` → (si implementado) aplicación real de cambios en Plex.
-
-- Devuelve:
-  - Filas orientadas a CSV (`metadata_fix_suggestions.csv`).
-  - Mensajes de log (`metadata_fix_log.txt`).
+- **`metadata_fix.py`**  
+  Generates actionable recommendations:
+  - Suggested title
+  - Corrected year
+  - Missing fields to repair
 
 ---
 
-### 2.7. `backend/delete_logic.py`
+## 4. Scoring & Decision Logic
 
-- `delete_files_from_rows(df, delete_dry_run) -> (ok, error, logs)`
-- Encapsula el borrado de archivos de disco:
-  - Comprueba existencia del archivo.
-  - Respeta `DELETE_DRY_RUN`.
-  - No tiene ninguna dependencia de Streamlit.
+### 4.1 Scoring
 
-👉 Se separa explícitamente del frontend. El tab de borrado solo prepara los datos y llama a esta función.
+`scoring.py` computes:
 
----
+- Bayesian IMDb rating  
+- Combined vote‑adjusted quality score  
+- Rotten Tomatoes contributions  
+- Age relevance (penalization rules)  
+- Plex user rating weighting  
 
-### 2.8. `backend/reporting.py`
+### 4.2 Decision Classification
 
-- Escribe CSVs:
-  - `write_all_csv(path, rows)`
-  - `write_filtered_csv(path, rows)`
-  - `write_suggestions_csv(path, rows)`
+`decision_logic.py` assigns categories:
 
-- Genera el HTML autónomo:
-  - `report_filtered.html` a partir de `report_filtered.csv`.
+- **KEEP**  
+- **DELETE**  
+- **UNKNOWN** (insufficient or contradictory data)  
+- **MISIDENTIFIED** (metadata issue detected)
 
-👉 Genera artefactos que otros componentes pueden usar sin depender de Python (por ejemplo, enviar el HTML por correo).
+Rules depend on thresholds from `config.py`.
 
----
+### 4.3 Safe Deletion Rules
 
-### 2.9. `backend/summary.py`
+`delete_logic.py` implements:
 
-- `compute_summary(df_all) -> dict`:
-
-  ```python
-  {
-      "total_count": ...,
-      "total_size_gb": ...,
-      "keep_count": ...,
-      "keep_size_gb": ...,
-      "dm_count": ...,
-      "dm_size_gb": ...
-  }
-  ```
-
-- Resumen global usado por el dashboard (`metric` de Streamlit).
+- Multi‑step confirmation  
+- Prevention of accidental mass deletions  
+- Logging of all deletion actions  
 
 ---
 
-### 2.10. `backend/report_loader.py`
+## 5. Reporting & Analytics
 
-- `load_reports(all_csv_path, filtered_csv_path) -> (df_all, df_filtered)`
-  - Lee `report_all.csv` y `report_filtered.csv`.
-  - Castea columnas texto (poster_url, trailer_url, omdb_json).
-  - Añade columnas derivadas (GB, década, etc.) usando `frontend.data_utils.add_derived_columns`.
-  - Limpia columnas no necesarias para el dashboard (como `thumb`).
+### 5.1 CSV Report Generation
 
-👉 Es el “adaptador” entre reporting y visualización.
+`report_loader.py` loads the final consolidated report:
 
----
+```
+report_all.csv → pandas DataFrame
+```
 
-### 2.11. `analiza_plex.py`
+Ensures correct types and schema validation.
 
-Script principal de análisis:
+### 5.2 Metrics & Statistics
 
-1. Conecta a Plex.
-2. Recorre las bibliotecas de tipo `movie`.
-3. Para cada película:
-   - Obtiene información de fichero.
-   - Llama a OMDb (o usa caché).
-   - Calcula scoring (`compute_scoring`).
-   - Detecta misidentificaciones.
-   - Genera sugerencias de metadata.
-4. Agrega resultados y llama a:
-   - `write_all_csv`
-   - `write_filtered_csv`
-   - `write_suggestions_csv`
-5. Genera el log de metadata.
+`stats.py` computes:
 
----
+- Rating distributions  
+- Decade histograms  
+- Votes and popularity metrics  
+- Size / duration summaries  
 
-## 3. Módulos frontend y responsabilidades
+### 5.3 Charting
 
-### 3.1. `dashboard.py`
+`charts.py` uses **Altair** to build:
 
-- Punto de entrada de la UI (Streamlit).
-- Hace:
-  - Carga de `.env`.
-  - `load_reports(...)` (backend).
-  - `compute_summary(...)` (backend).
-  - Configuración visual (ocultar header, layout wide).
-  - Gestión de estado del “modal” de detalle.
-  - Definición de pestañas y delegación a `frontend.tabs.*`.
-
-👉 No contiene lógica de negocio pesada: solo orquesta.
+- Bar charts  
+- Histograms  
+- Trend analyses  
+- Quality distributions  
 
 ---
 
-### 3.2. `frontend/components.py`
+## 6. Streamlit Dashboard Architecture
 
-Componentes reutilizables de UI:
+Dashboard modules:
 
-- `aggrid_with_row_click(df, key_suffix) -> dict | None`
-  - Pinta AgGrid con selección por fila.
-  - Devuelve la fila seleccionada como dict.
-  - Oculta columnas técnicas (omdb_json, file, etc.).
+| Module | Description |
+|--------|-------------|
+| `dashboard.py` | Main Streamlit app controller. |
+| `components.py` | Reusable UI pieces (movie cards, filters, selectors). |
+| `all_movies.py` | Full movie library view. |
+| `candidates.py` | Focused list of deletion candidates. |
+| `delete.py` | Controlled deletion workflow. |
+| `advanced.py` | Power‑user tools (filters, debugging, metadata inspection). |
 
-- `render_detail_card(row, show_modal_button=True)`
-  - Muestra la ficha lateral tipo Plex:
-    - Poster
-    - Ratings
-    - Info OMDb
-    - Archivo y tamaño
-    - Enlaces a IMDb y Plex Web
-
-- `render_modal()`
-  - Implementa la vista “ampliada” reutilizando `render_detail_card`.
+Dashboard consumes the analysis CSV + caches, allowing fast startup without re‑querying Plex or OMDb.
 
 ---
 
-### 3.3. `frontend/data_utils.py`
+## 7. Execution & Configuration
 
-Funciones de ayuda de datos usadas por el frontend:
+### 7.1 Entrypoints
 
-- `add_derived_columns(df)`
-  - Convierte numéricos (ratings, votos, año, file_size).
-  - Calcula `file_size_gb`.
-  - Calcula `decade` y `decade_label`.
+- **`analiza.py`**  
+  Main executable: asks user whether to analyse Plex or DLNA and launches the right workflow.
 
-- `explode_genres_from_omdb_json(df)`
-  - Lee `omdb_json` por fila.
-  - Explota una fila por género (`genre`).
+- **`analiza_plex.py`**  
+  Full analysis pipeline controller:
+  - Connect to Plex  
+  - Iterate libraries  
+  - Run movie analysis pipeline  
+  - Write final report & summary  
 
-- `build_word_counts(df, decisions)`
-  - Construye tabla de palabras frecuentes en títulos.
+### 7.2 Configuration System
 
-- `decision_color(field="decision")`
-  - Define paleta de colores fija para Altair por decisión.
+`config.py` centralizes:
 
-- `safe_json_loads_single(x)`
-  - Parseo defensivo de JSON usado en detalle y gráficos.
+- API keys (Plex, OMDb)  
+- Decision thresholds  
+- Retries, caching rules  
+- Exclusion lists  
+- Silent mode flags  
 
----
+### 7.3 Logging
 
-### 3.4. `frontend/tabs/*`
+`logger.py` ensures:
 
-Cada pestaña del dashboard está encapsulada en un módulo:
-
-- `tabs/all_movies.py`
-  - Pestaña “📚 Todas”.
-  - Muestra todas las películas, grid + detalle.
-
-- `tabs/candidates.py`
-  - Pestaña “⚠️ Candidatas”.
-  - Solo DELETE/MAYBE.
-
-- `tabs/advanced.py`
-  - Pestaña “🔎 Búsqueda avanzada”.
-  - Filtros por biblioteca, decisión, rating mínimo IMDb, votos mínimos.
-
-- `tabs/delete.py`
-  - Pestaña “🧹 Borrado”.
-  - Filtros por biblioteca/decisión.
-  - Selección múltiple en AgGrid.
-  - Llamada a `backend.delete_logic.delete_files_from_rows`.
-
-- `tabs/charts.py`
-  - Pestaña “📊 Gráficos”.
-  - Distintas vistas:
-    - Distribución por decisión
-    - IMDb vs RT
-    - Décadas
-    - Bibliotecas
-    - Géneros (OMDb)
-    - Espacio en disco por biblioteca/decisión
-    - Boxplot IMDb por biblioteca
-    - Ranking de directores
-    - Palabras frecuentes
-    - **Distribución por `scoring_rule`**
-
-- `tabs/metadata.py`
-  - Pestaña “🧠 Metadata”.
-  - Carga `metadata_fix_suggestions.csv`.
-  - Permite filtrar por biblioteca y acción.
-  - Permite exportar CSV filtrado.
+- Consistent formatting  
+- Optional silent mode  
+- Traceability for deletions and pipeline steps  
 
 ---
 
-## 4. Diagrama ASCII de flujo backend → frontend
+## 8. Data Flow Diagram (Simplified)
 
-```text
-                 ┌──────────────────────────────┐
-                 │          analiza_plex.py     │
-                 └──────────────┬───────────────┘
-                                │
-                                │ usa
-                                ▼
-         ┌─────────────────────────────────────────────┐
-         │                 backend/                    │
-         │                                             │
-         │  config.py          plex_client.py          │
-         │      ▲                      ▲               │
-         │      │                      │               │
-         │  scoring.py         omdb_client.py          │
-         │      ▲                      ▲               │
-         │      │                      │               │
-         │ decision_logic.py    metadata_fix.py        │
-         │      ▲                      ▲               │
-         │      └─────────── analyzer / loop ─────────┘
-         │                      │
-         │                      ▼
-         │          reporting.py (CSV + HTML)          │
-         └──────────────────────┬──────────────────────┘
-                                │
-                                │ genera
-                                ▼
-                 ┌──────────────────────────────────┐
-                 │     report_all.csv, ...          │
-                 └──────────────────────────────────┘
-                                │
-                                │ lee
-                                ▼
-          ┌────────────────────────────────────────┐
-          │               dashboard.py             │
-          │          (Streamlit frontend)          │
-          └────────────────┬───────────────────────┘
-                           │
-                           │ usa
-                           ▼
-      ┌───────────────────────────────────────────────────┐
-      │                    frontend/                      │
-      │                                                   │
-      │  report_loader.py  → df_all / df_filtered         │
-      │  components.py     → grids, detalles, modal       │
-      │  data_utils.py     → derivadas para gráficos      │
-      │  tabs/*.py         → pestañas de Streamlit        │
-      └───────────────────────────────────────────────────┘
+```
+           ┌──────────────┐
+           │   Plex API   │
+           └──────┬───────┘
+                  │ Movies
+                  ▼
+        ┌─────────────────────┐
+        │  analyzer pipeline  │
+        └──────┬──────────────┘
+               │ Normalized Row
+               ▼
+      ┌────────────────────┐
+      │   Scoring Engine   │
+      └────────┬───────────┘
+               │ Score + Flags
+               ▼
+     ┌──────────────────────┐
+     │ Decision Logic        │
+     └────────┬─────────────┘
+              │ Category
+              ▼
+     ┌───────────────────────┐
+     │ report_all.csv         │
+     └────────┬──────────────┘
+              │ Load
+              ▼
+     ┌────────────────────────┐
+     │   Streamlit Dashboard   │
+     └────────────────────────┘
 ```
 
 ---
 
-## 5. Diagrama ASCII de dependencias principales
+## 9. Caching Strategy
 
-> Nota: no es exhaustivo al detalle de cada función, pero sí a nivel de módulo.
+| Cache | Source | Purpose |
+|-------|---------|---------|
+| `omdb_cache.json` | OMDb | Stores rating responses to avoid repeated API usage. |
+| `wiki_cache.json` | Wikipedia | Stores extracted summaries and metadata. |
 
-```text
-[config]
-   ▲
-   │
-   ├──> [plex_client]
-   ├──> [omdb_client]
-   ├──> [scoring]
-   ├──> [metadata_fix]
-   ├──> [delete_logic]
-   └──> [reporting]
+Caches ensure fast re-runs without regenerating external queries.
 
-[omdb_client]
-   ▲
-   │
-   └──> usado por [analyzer / analiza_plex.py]
+---
 
-[plex_client]
-   ▲
-   │
-   └──> usado por [analyzer / analiza_plex.py]
+## 10. Safety & Defensive Design
 
-[scoring]
-   ▲
-   │
-   └──> [decision_logic] (reexporta decide_action)
-              ▲
-              │
-              └──> usado por [analyzer]
+- All external calls wrapped in retry logic.  
+- All deletion actions logged and double‑confirmed.  
+- Parsing pipeline uses defensive validation to avoid crashes on malformed data.  
+- Dashboard never deletes anything without explicit confirmation.  
 
-[metadata_fix]
-   ▲
-   │
-   └──> usado por [analyzer]
+---
 
-[delete_logic]
-   ▲
-   │
-   └──> usado por [frontend.tabs.delete]
+## 11. Extensibility Points
 
-[reporting]
-   ▲
-   │
-   └──> usado por [analyzer] para CSV/HTML
+The system is designed for future expansions:
 
-[summary]
-   ▲
-   │
-   └──> usado por [dashboard.py]
+- Adding new metadata providers  
+- Supporting additional media servers  
+- Enhanced scoring heuristics  
+- Automated metadata correction  
+- Machine‑learning quality predictors  
 
-[report_loader]
-   ▲
-   │
-   └──> usado por [dashboard.py]
-             ▲
-             │
-             ├──> usa [frontend.data_utils.add_derived_columns]
-             └──> alimenta [frontend.tabs.*]
+---
 
-[frontend.components]
-   ▲
-   │
-   └──> usado por [frontend.tabs.all_movies],
-                    [frontend.tabs.candidates],
-                    [frontend.tabs.advanced],
-                    [frontend.tabs.metadata],
-                    [render_modal en dashboard/components]
+If you want a **diagram in SVG**, a **UML class diagram**, or a **data-contract schema**, I can generate those too.
 
-[frontend.tabs.*]
-   ▲
-   │
-   └──> llamados desde [dashboard.py]
+
+---
+
+## 12. UML-Style Module Diagram (Mermaid)
+
+The following Mermaid diagram shows the main modules and their relationships at a high level.
+
+```mermaid
+graph TD
+
+    subgraph EntryPoints
+        A1[analiza.py]
+        A2[analiza_plex.py]
+    end
+
+    subgraph ConfigLogging
+        C1[config.py]
+        C2[logger.py]
+    end
+
+    subgraph Inputs
+        I1[plex_client.py]
+        I2[DNLA_input.py]
+        I3[omdb_client.py]
+        I4[wiki_client.py]
+    end
+
+    subgraph Analysis
+        P1[analyzer.py]
+        P2[analyze_input_core.py]
+        P3[metadata.py]
+        P4[metadata_fix.py]
+    end
+
+    subgraph ScoringDecision
+        S1[scoring.py]
+        S2[decision_logic.py]
+        S3[delete_logic.py]
+    end
+
+    subgraph ReportingAnalytics
+        R1[report_loader.py]
+        R2[stats.py]
+        R3[charts.py]
+        R4[reporting.py]
+        R5[summary.py]
+    end
+
+    subgraph Dashboard
+        D1[dashboard.py]
+        D2[components.py]
+        D3[all_movies.py]
+        D4[candidates.py]
+        D5[delete.py]
+        D6[advanced.py]
+    end
+
+    A1 --> A2
+    A2 --> I1
+    A2 --> I2
+    A2 --> P1
+
+    C1 --> A2
+    C2 --> A2
+    C1 --> P1
+    C2 --> P1
+
+    P1 --> P2
+    P1 --> P3
+    P1 --> P4
+    P1 --> S1
+
+    I1 --> P1
+    I2 --> P1
+    I3 --> P1
+    I4 --> P1
+
+    S1 --> S2
+    S2 --> S3
+
+    S2 --> R1
+    R1 --> R2
+    R1 --> R3
+    R1 --> R4
+    R1 --> R5
+
+    R1 --> D1
+    D1 --> D2
+    D1 --> D3
+    D1 --> D4
+    D1 --> D5
+    D1 --> D6
 ```
 
 ---
 
-## 6. Puntos de extensión recomendados
+## 13. SVG Architecture Diagram (Simplified)
 
-- **Nuevas reglas de scoring**: `backend/scoring.py`
-  - Añadir nuevas reglas o cambiar umbrales sin tocar el resto del sistema.
-- **Nuevos gráficos / análisis**: `frontend/tabs/charts.py`
-  - Reutilizar `frontend.data_utils` para nuevas métricas.
-- **Nuevas vistas de detalle**: `frontend/components.py`
-  - Ampliar la tarjeta de detalle con más campos de `omdb_json`.
-- **Integraciones externas (ej. enviar informes)**:
-  - Colgarse de los ficheros ya generados en `reporting.py`.
+Below is a simple SVG block diagram capturing the main layers of the system.  
+You can open this in any browser or vector editor to tweak it as needed.
+
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="520">
+  <style>
+    .box { fill: #f5f5f5; stroke: #333; stroke-width: 1.2; }
+    .title { font-family: Arial, sans-serif; font-size: 14px; font-weight: bold; }
+    .text { font-family: Arial, sans-serif; font-size: 12px; }
+  </style>
+
+  <!-- Inputs -->
+  <rect x="20" y="40" width="260" height="120" class="box"/>
+  <text x="30" y="60" class="title">Inputs</text>
+  <text x="30" y="80" class="text">plex_client.py</text>
+  <text x="30" y="100" class="text">DNLA_input.py</text>
+  <text x="30" y="120" class="text">omdb_client.py</text>
+  <text x="30" y="140" class="text">wiki_client.py</text>
+
+  <!-- Analysis -->
+  <rect x="320" y="40" width="260" height="120" class="box"/>
+  <text x="330" y="60" class="title">Analysis &amp; Normalization</text>
+  <text x="330" y="80" class="text">analyzer.py</text>
+  <text x="330" y="100" class="text">analyze_input_core.py</text>
+  <text x="330" y="120" class="text">metadata.py</text>
+  <text x="330" y="140" class="text">metadata_fix.py</text>
+
+  <!-- Scoring / Decision -->
+  <rect x="620" y="40" width="260" height="120" class="box"/>
+  <text x="630" y="60" class="title">Scoring &amp; Decision</text>
+  <text x="630" y="80" class="text">scoring.py</text>
+  <text x="630" y="100" class="text">decision_logic.py</text>
+  <text x="630" y="120" class="text">delete_logic.py</text>
+
+  <!-- Reporting -->
+  <rect x="120" y="220" width="260" height="120" class="box"/>
+  <text x="130" y="240" class="title">Reporting &amp; Analytics</text>
+  <text x="130" y="260" class="text">report_loader.py</text>
+  <text x="130" y="280" class="text">stats.py</text>
+  <text x="130" y="300" class="text">charts.py</text>
+  <text x="130" y="320" class="text">reporting.py, summary.py</text>
+
+  <!-- Dashboard -->
+  <rect x="440" y="220" width="260" height="120" class="box"/>
+  <text x="450" y="240" class="title">Streamlit Dashboard</text>
+  <text x="450" y="260" class="text">dashboard.py</text>
+  <text x="450" y="280" class="text">components.py</text>
+  <text x="450" y="300" class="text">all_movies.py, candidates.py</text>
+  <text x="450" y="320" class="text">delete.py, advanced.py</text>
+
+  <!-- Config / Logging -->
+  <rect x="20" y="380" width="260" height="100" class="box"/>
+  <text x="30" y="400" class="title">Config &amp; Logging</text>
+  <text x="30" y="420" class="text">config.py</text>
+  <text x="30" y="440" class="text">logger.py</text>
+
+  <!-- Entrypoints -->
+  <rect x="320" y="380" width="260" height="100" class="box"/>
+  <text x="330" y="400" class="title">Entrypoints</text>
+  <text x="330" y="420" class="text">analiza.py</text>
+  <text x="330" y="440" class="text">analiza_plex.py</text>
+
+  <!-- Arrows -->
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,4 L0,8 z" fill="#333" />
+    </marker>
+  </defs>
+
+  <line x1="280" y1="100" x2="320" y2="100" stroke="#333" stroke-width="1.2" marker-end="url(#arrow)" />
+  <line x1="580" y1="100" x2="620" y2="100" stroke="#333" stroke-width="1.2" marker-end="url(#arrow)" />
+  <line x1="450" y1="160" x2="250" y2="220" stroke="#333" stroke-width="1.2" marker-end="url(#arrow)" />
+  <line x1="450" y1="160" x2="570" y2="220" stroke="#333" stroke-width="1.2" marker-end="url(#arrow)" />
+  <line x1="450" y1="340" x2="450" y2="380" stroke="#333" stroke-width="1.2" marker-end="url(#arrow)" />
+</svg>
+```
 
 ---
 
-## 7. Resumen para desarrolladores
+## 14. Developer-Oriented Notes
 
-- El **backend** se encarga de:
-  - Hablar con Plex y OMDb.
-  - Aplicar reglas y generar artefactos (CSV/HTML).
-- El **frontend**:
-  - No hace lógica de negocio.
-  - Solo presenta, filtra, grafica y llama a funciones backend bien encapsuladas.
-
-Si mantienes esta separación (todo lo que toque Plex/OMDb/disco en backend, todo lo que sea UI en frontend), el proyecto seguirá siendo fácil de extender y refactorizar sin sorpresas.
+- The core contracts between layers are **pandas DataFrames** with stable column sets (e.g. the normalized movie report).  
+- External service clients (`omdb_client.py`, `wiki_client.py`, `plex_client.py`) are designed to be thin and **side-effect free** except for network I/O and cache updates.  
+- Most business rules live in `scoring.py`, `decision_logic.py` and `metadata*.py`; this is where new heuristics or rules should be introduced.  
+- The Streamlit dashboard only **reads** from the report and interacts with the deletion logic through well-defined functions, avoiding direct low-level access to Plex.  
+- Type hints are expected to be strict enough for mypy/Pyright; new code should follow the same practice.
