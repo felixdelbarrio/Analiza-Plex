@@ -1,4 +1,3 @@
-# backend/dlna_discovery.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,13 +14,20 @@ from backend import logger as _logger
 # Dirección multicast SSDP estándar
 SSDP_ADDR: Tuple[str, int] = ("239.255.255.250", 1900)
 
-# Usamos un ST genérico para que responda el máximo número de servidores
-# (incluyendo Plex u otros MediaServers que no anuncian exactamente
-# "urn:schemas-upnp-org:device:MediaServer:1").
-SSDP_ST: str = "ssdp:all"
+# Intentamos primero el ST típico de MediaServer.
+SSDP_ST_MEDIA_SERVER: str = "urn:schemas-upnp-org:device:MediaServer:1"
+
+# Fallback genérico si el MediaServer ST no da resultados (algunos servers anuncian distinto).
+SSDP_ST_ALL: str = "ssdp:all"
 
 # MX: segundos máximos que los servidores pueden esperar antes de responder
 SSDP_MX: int = 2
+
+# Broadcast fallback (unicast) para redes donde multicast SSDP no funciona/está filtrado.
+SSDP_BROADCAST_ADDR: Tuple[str, int] = ("255.255.255.255", 1900)
+
+# Timeouts de red
+LOCATION_FETCH_TIMEOUT_SECONDS: float = 5.0
 
 
 @dataclass
@@ -44,7 +50,8 @@ def _parse_ssdp_response(data: bytes) -> Dict[str, str]:
     lines = text.split("\r\n")
     headers: Dict[str, str] = {}
 
-    for line in lines[1:]:  # saltamos la primera línea "HTTP/1.1 200 OK"
+    # Saltamos la primera línea "HTTP/1.1 200 OK"
+    for line in lines[1:]:
         if not line.strip():
             continue
         if ":" not in line:
@@ -55,51 +62,124 @@ def _parse_ssdp_response(data: bytes) -> Dict[str, str]:
     return headers
 
 
-def _fetch_friendly_name(location: str) -> str:
+def _extract_friendly_name(root: ET.Element, fallback: str) -> str:
+    """
+    Extrae friendlyName del device description, tolerando XML con/sin namespaces.
+    """
+    # Sin namespaces:
+    for dev in root.iter("device"):
+        fn = dev.findtext("friendlyName")
+        if fn:
+            return fn.strip()
+
+    # Con posibles namespaces (heurística mínima)
+    for elem in root.iter():
+        if isinstance(elem.tag, str) and elem.tag.endswith("device"):
+            for child in elem:
+                if isinstance(child.tag, str) and child.tag.endswith("friendlyName"):
+                    if child.text:
+                        return child.text.strip()
+
+    return fallback
+
+
+def _device_has_content_directory(root: ET.Element) -> bool:
+    """
+    Devuelve True si el device description contiene el servicio ContentDirectory.
+    """
+    for elem in root.iter():
+        if not isinstance(elem.tag, str):
+            continue
+        if not elem.tag.endswith("service"):
+            continue
+
+        service_type: str | None = None
+        for child in list(elem):
+            if not isinstance(child.tag, str):
+                continue
+            if child.tag.endswith("serviceType") and child.text:
+                service_type = child.text.strip()
+                break
+
+        if service_type and service_type.startswith(
+            "urn:schemas-upnp-org:service:ContentDirectory:"
+        ):
+            return True
+
+    return False
+
+
+def _fetch_device_info(location: str) -> tuple[str, bool]:
     """
     Descarga la descripción del dispositivo UPnP (XML) desde LOCATION y
-    extrae el <friendlyName>. Si falla, devuelve la LOCATION como fallback.
+    devuelve (friendly_name, has_content_directory).
+
+    Si falla, devuelve (LOCATION, False).
     """
     try:
-        with urlopen(location, timeout=3) as resp:
+        with urlopen(location, timeout=LOCATION_FETCH_TIMEOUT_SECONDS) as resp:
             xml_data = resp.read()
-    except Exception as exc:  # pragma: no cover (errores de red reales)
+    except Exception as exc:  # pragma: no cover
         _logger.warning(f"[DLNA] No se pudo descargar LOCATION {location}: {exc}")
-        return location
+        return location, False
 
     try:
         root = ET.fromstring(xml_data)
-        # El friendlyName típico está en device/friendlyName
-        # namespace libre o con ns; probamos ambas cosas de forma simple
-        # Sin namespaces:
-        for dev in root.iter("device"):
-            fn = dev.findtext("friendlyName")
-            if fn:
-                return fn.strip()
-
-        # Con posibles namespaces (heurística mínima)
-        for elem in root.iter():
-            if elem.tag.endswith("device"):
-                fn = None
-                for child in elem:
-                    if isinstance(child.tag, str) and child.tag.endswith("friendlyName"):
-                        fn = child.text
-                        break
-                if fn:
-                    return fn.strip()
     except Exception as exc:  # pragma: no cover
         _logger.warning(f"[DLNA] Error parseando XML de {location}: {exc}")
+        return location, False
 
-    return location
+    friendly = _extract_friendly_name(root, fallback=location)
+    has_cd = _device_has_content_directory(root)
+    return friendly, has_cd
+
+
+def _build_msearch(st: str, mx: int) -> bytes:
+    """
+    Construye un M-SEARCH SSDP.
+    """
+    msg = (
+        "M-SEARCH * HTTP/1.1\r\n"
+        f"HOST: {SSDP_ADDR[0]}:{SSDP_ADDR[1]}\r\n"
+        'MAN: "ssdp:discover"\r\n'
+        f"MX: {int(mx)}\r\n"
+        f"ST: {st}\r\n"
+        "\r\n"
+    )
+    return msg.encode("utf-8")
+
+
+def _send_discovery_probes(sock: socket.socket, msg: bytes) -> None:
+    """
+    Envía probes SSDP por multicast y (fallback) por broadcast unicast.
+    """
+    # Multicast estándar
+    try:
+        sock.sendto(msg, SSDP_ADDR)
+    except Exception:  # pragma: no cover
+        pass
+
+    # Broadcast unicast (útil cuando multicast está filtrado o no hay respuesta)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.sendto(msg, SSDP_BROADCAST_ADDR)
+    except Exception:  # pragma: no cover
+        pass
 
 
 def discover_dlna_devices(
-    timeout: float = 3.0,
-    st: str = SSDP_ST,
+    timeout: float = 6.0,
+    st: str = SSDP_ST_MEDIA_SERVER,
     mx: int = SSDP_MX,
 ) -> List[DLNADevice]:
     """
-    Descubre dispositivos DLNA/UPnP MediaServer en la red usando SSDP.
+    Descubre dispositivos DLNA/UPnP en la red usando SSDP.
+
+    IMPORTANTE:
+    - Filtra para quedarse SOLO con dispositivos que realmente exponen ContentDirectory,
+      evitando falsos positivos como routers IGD (p.ej. eero/igd.xml).
+    - Además, envía M-SEARCH también por broadcast unicast (fallback), lo que ayuda
+      en redes donde multicast no devuelve respuesta pero VLC sí detecta servidores.
 
     Devuelve una lista de DLNADevice con:
       - friendly_name
@@ -110,21 +190,14 @@ def discover_dlna_devices(
     Si no se encuentra ningún dispositivo con el ST indicado y éste no es
     "ssdp:all", se hace un reintento automático con ST="ssdp:all".
     """
-    msg = (
-        "M-SEARCH * HTTP/1.1\r\n"
-        f"HOST: {SSDP_ADDR[0]}:{SSDP_ADDR[1]}\r\n"
-        'MAN: "ssdp:discover"\r\n'
-        f"MX: {int(mx)}\r\n"
-        f"ST: {st}\r\n"
-        "\r\n"
-    ).encode("utf-8")
+    msg = _build_msearch(st=st, mx=mx)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
         sock.settimeout(timeout)
-        # Algunos stacks requieren permitir reuse
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.sendto(msg, SSDP_ADDR)
+
+        _send_discovery_probes(sock, msg)
 
         start = time.time()
         locations: Dict[str, DLNADevice] = {}
@@ -155,7 +228,12 @@ def discover_dlna_devices(
             host = parsed.hostname or addr[0]
             port = parsed.port or 80
 
-            friendly = _fetch_friendly_name(loc)
+            friendly, has_cd = _fetch_device_info(loc)
+
+            # FILTRO CLAVE: sin ContentDirectory no es un MediaServer útil para nosotros
+            if not has_cd:
+                continue
+
             locations[loc] = DLNADevice(
                 friendly_name=friendly,
                 location=loc,
@@ -166,15 +244,17 @@ def discover_dlna_devices(
         devices = list(locations.values())
 
         # Fallback: si no hay dispositivos y el ST no era ya "ssdp:all",
-        # reintentamos una vez con ST genérico.
-        if not devices and st != "ssdp:all":
+        # reintentamos una vez con ST genérico (pero seguimos filtrando por ContentDirectory).
+        if not devices and st != SSDP_ST_ALL:
             _logger.info(
-                f"[DLNA] Ningún dispositivo con ST={st!r}, "
-                "reintentando con ST='ssdp:all'."
+                f"[DLNA] Ningún dispositivo válido con ST={st!r}, "
+                f"reintentando con ST={SSDP_ST_ALL!r}."
             )
-            return discover_dlna_devices(timeout=timeout, st="ssdp:all", mx=mx)
+            return discover_dlna_devices(timeout=timeout, st=SSDP_ST_ALL, mx=mx)
 
-        _logger.info(f"[DLNA] Descubiertos {len(devices)} servidor(es) DLNA/UPnP.")
+        _logger.info(
+            f"[DLNA] Descubiertos {len(devices)} servidor(es) DLNA con ContentDirectory."
+        )
         return devices
     finally:
         sock.close()

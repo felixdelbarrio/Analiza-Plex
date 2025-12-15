@@ -9,12 +9,12 @@ Al ejecutarse, pregunta al usuario si quiere analizar:
 
 Según la opción elegida, delega en:
   - backend.analiza_plex.analyze_all_libraries()
-  - backend.analiza_dlna.analyze_dlna_server()
+  - backend.analiza_dlna.analyze_dlna_server(device)
 
 Para el caso DLNA:
-  - Primero se descubren servidores DLNA/UPnP en la red.
-  - Se listan numerados para que el usuario elija uno.
-  - Tras la selección, se lanza el flujo de análisis DLNA.
+  - Descubre servidores DLNA/UPnP en la red.
+  - Lista numerada para selección.
+  - Tras la selección, lanza el flujo DLNA real (ContentDirectory) pasando el device.
 """
 
 from typing import Literal, Optional
@@ -22,7 +22,6 @@ from typing import Literal, Optional
 from backend.analiza_plex import analyze_all_libraries
 from backend.analiza_dlna import analyze_dlna_server
 from backend.dlna_discovery import DLNADevice, discover_dlna_devices
-
 
 Choice = Literal["1", "2"]
 
@@ -83,8 +82,10 @@ def _select_dlna_device() -> Optional[DLNADevice]:
                 )
                 return chosen
 
-        print(f"Opción no válida. Introduce un número entre 1 y {len(devices)}, "
-              "o Enter para cancelar.")
+        print(
+            f"Opción no válida. Introduce un número entre 1 y {len(devices)}, "
+            "o Enter para cancelar."
+        )
 
 
 def main() -> None:
@@ -92,18 +93,15 @@ def main() -> None:
     choice = _ask_source()
 
     if choice == "1":
-        # Análisis clásico Plex
         analyze_all_libraries()
-    else:
-        # Flujo DLNA: descubrimiento + selección + análisis
-        device = _select_dlna_device()
-        if device is None:
-            # Usuario canceló o no hay servidores; simplemente salimos.
-            return
+        return
 
-        # De momento el análisis DLNA trabaja sobre directorio local;
-        # más adelante puedes adaptar analyze_dlna_server para usar `device`.
-        analyze_dlna_server()
+    device = _select_dlna_device()
+    if device is None:
+        return
+
+    # DLNA real: pasamos el device seleccionado para evitar doble selección.
+    analyze_dlna_server(device)
 
 
 if __name__ == "__main__":
